@@ -23,6 +23,7 @@ class _PsyBalanceAppState extends State<PsyBalanceApp> {
 
   StreamSubscription<AuthState>? _authSubscription;
   bool _isResolvingRole = false;
+  String? _lastRoute;
 
   @override
   void initState() {
@@ -82,10 +83,22 @@ class _PsyBalanceAppState extends State<PsyBalanceApp> {
 
     _isResolvingRole = true;
     try {
-      final UserRole role = await _authService.getUserRole(
-        forceRefresh: forceRefresh,
+      final User? user = _authService.currentUser;
+      final UserRole? role = await _tryResolveRole(forceRefresh: forceRefresh);
+      if (user == null || role == null) {
+        return;
+      }
+
+      final String target = _appRouter.entryRouteForRole(role);
+      if (_lastRoute == target) {
+        return;
+      }
+
+      _lastRoute = target;
+      _navigatorKey.currentState?.pushNamedAndRemoveUntil(
+        target,
+        (Route<dynamic> route) => false,
       );
-      _goTo(_appRouter.entryRouteForRole(role));
     } on AuthFailure {
       try {
         await _authService.logout();
@@ -102,10 +115,26 @@ class _PsyBalanceAppState extends State<PsyBalanceApp> {
       return;
     }
 
+     if (_lastRoute == routeName) {
+      return;
+    }
+
+    _lastRoute = routeName;
+
     navigator.pushNamedAndRemoveUntil(
       routeName,
       (Route<dynamic> route) => false,
     );
+  }
+
+  Future<UserRole?> _tryResolveRole({required bool forceRefresh}) async {
+    try {
+      return await _authService.getUserRole(forceRefresh: forceRefresh);
+    } on AuthFailure {
+      rethrow;
+    } catch (_) {
+      return _authService.cachedRole;
+    }
   }
 
   @override

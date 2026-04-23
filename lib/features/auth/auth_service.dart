@@ -61,6 +61,45 @@ class AuthService {
     _cachedOnboardingCompleted = _readOnboardingCompletedFromCurrentUser();
   }
 
+  Future<void> loadUserRole() async {
+    final User? user = _client.auth.currentUser;
+    if (user == null) {
+      print('ROLE LOAD: skipped, user is null');
+      return;
+    }
+
+    try {
+      final Map<String, dynamic>? response = await _client
+          .from('users')
+          .select('role')
+          .eq('id', user.id)
+          .maybeSingle();
+
+      final UserRole? roleFromTable = UserRoleMapper.fromValue(
+        response?['role'] as String?,
+      );
+
+      if (roleFromTable != null) {
+        _setRoleCache(roleFromTable);
+        print('ROLE LOAD: loaded role=${roleFromTable.value} from users table');
+        return;
+      }
+
+      final UserRole? roleFromMetadata = _readRoleFromCurrentUserMetadata();
+      if (roleFromMetadata != null) {
+        _setRoleCache(roleFromMetadata);
+        print('ROLE LOAD: fallback to metadata role=${roleFromMetadata.value}');
+        return;
+      }
+
+      print('ROLE LOAD: role is still null after users lookup');
+    } on PostgrestException catch (error) {
+      print('ROLE LOAD ERROR: ${error.message}');
+    } catch (error) {
+      print('ROLE LOAD ERROR: $error');
+    }
+  }
+
   Future<UserRole> getUserRole({bool forceRefresh = false}) async {
     if (!forceRefresh && _cachedRole != null) {
       return _cachedRole!;
@@ -82,13 +121,16 @@ class AuthService {
 
       final UserRole? roleFromMetadata = _readRoleFromCurrentUserMetadata();
       if (roleFromMetadata != null) {
-        await _persistUserRoleSilently(userId: user.id, role: roleFromMetadata);
+        await _persistUserRoleSilently(
+          userId: user.id,
+          role: roleFromMetadata,
+          email: user.email,
+        );
         _setRoleCache(roleFromMetadata);
         return roleFromMetadata;
       }
 
       const UserRole fallbackRole = UserRole.client;
-      await _persistUserRoleSilently(userId: user.id, role: fallbackRole);
       _setRoleCache(fallbackRole);
       return fallbackRole;
     } on AuthFailure {
@@ -185,6 +227,8 @@ class AuthService {
       final UserRole resolvedRole = await _resolveAndCacheRoleAfterAuth(
         fallbackRole: role,
         explicitUserId: response.user?.id,
+        explicitEmail: normalizedEmail,
+        persistFallbackRoleToUsersTable: true,
       );
 
       return RegisterResult(
@@ -219,6 +263,8 @@ class AuthService {
       final UserRole resolvedRole = await _resolveAndCacheRoleAfterAuth(
         fallbackRole: UserRole.client,
         explicitUserId: response.user?.id,
+        explicitEmail: normalizedEmail,
+        persistFallbackRoleToUsersTable: false,
       );
 
       return LoginResult(
@@ -305,6 +351,8 @@ class AuthService {
   Future<UserRole> _resolveAndCacheRoleAfterAuth({
     required UserRole fallbackRole,
     String? explicitUserId,
+    String? explicitEmail,
+    required bool persistFallbackRoleToUsersTable,
   }) async {
     final UserRole? roleFromAuthUid = await _fetchRoleFromUsersTableByAuthUid();
     if (roleFromAuthUid != null) {
@@ -326,14 +374,22 @@ class AuthService {
     final UserRole? roleFromMetadata = _readRoleFromCurrentUserMetadata();
     if (roleFromMetadata != null) {
       if (userId != null) {
-        await _persistUserRoleSilently(userId: userId, role: roleFromMetadata);
+        await _persistUserRoleSilently(
+          userId: userId,
+          role: roleFromMetadata,
+          email: explicitEmail,
+        );
       }
       _setRoleCache(roleFromMetadata);
       return roleFromMetadata;
     }
 
-    if (userId != null) {
-      await _persistUserRoleSilently(userId: userId, role: fallbackRole);
+    if (persistFallbackRoleToUsersTable && userId != null) {
+      await _persistUserRoleSilently(
+        userId: userId,
+        role: fallbackRole,
+        email: explicitEmail,
+      );
     }
     _setRoleCache(fallbackRole);
     return fallbackRole;
@@ -347,11 +403,22 @@ class AuthService {
   Future<void> _persistUserRoleSilently({
     required String userId,
     required UserRole role,
+    String? email,
   }) async {
     try {
+      final String? resolvedEmail = _resolveEmailForUsersTable(email: email);
+      if (resolvedEmail == null) {
+        await _client
+            .from('users')
+            .update(<String, dynamic>{'role': role.value})
+            .eq('id', userId);
+        return;
+      }
+
       await _client.from('users').upsert(
         <String, dynamic>{
           'id': userId,
+          'email': resolvedEmail,
           'role': role.value,
         },
         onConflict: 'id',
@@ -361,6 +428,20 @@ class AuthService {
     } catch (_) {
       return;
     }
+  }
+
+  String? _resolveEmailForUsersTable({String? email}) {
+    final String? raw = email ?? currentUser?.email;
+    if (raw == null) {
+      return null;
+    }
+
+    final String normalized = raw.trim();
+    if (normalized.isEmpty) {
+      return null;
+    }
+
+    return normalized;
   }
 
   String _mapSignUpError(AuthException exception) {

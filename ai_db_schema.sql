@@ -1,82 +1,81 @@
--- =========================
+-- PsyBalance MVP schema (public)
+-- Dev stage: RLS/policies intentionally NOT enabled here.
+
+create extension if not exists pgcrypto;
+
+create table if not exists public.users (
+  id uuid primary key references auth.users(id) on delete cascade,
+  email text,
+  role text check (role in ('client', 'coach', 'administrator')) not null default 'client',
+  created_at timestamp with time zone default now()
+);
+
+create table if not exists public.clients (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid references public.users(id) on delete cascade,
+  coach_id uuid references public.users(id) on delete set null
+);
+
+create table if not exists public.check_ins (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid references public.users(id) on delete cascade,
+  date date not null,
+  sleep int,
+  stress int,
+  energy int,
+  mood int
+);
+
 create table if not exists public.food_logs (
-  id uuid primary key default uuid_generate_v4(),
-  user_id uuid not null references public.users(id) on delete cascade,
-  image_url text not null,
-  meal_type text check (meal_type in ('breakfast','lunch','dinner','snack')),
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid references public.users(id) on delete cascade,
+  image_url text,
+  meal_type text,
   created_at timestamp default now()
 );
 
-create index if not exists idx_foodlogs_user_id on public.food_logs(user_id);
-
--- =========================
--- PLANS
--- =========================
 create table if not exists public.plans (
-  id uuid primary key default uuid_generate_v4(),
-  user_id uuid not null references public.users(id) on delete cascade,
-  week_start date not null,
-  created_at timestamp default now()
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid references public.users(id) on delete cascade,
+  week_start date
 );
 
-create index if not exists idx_plans_user_id on public.plans(user_id);
-
--- =========================
--- PLAN ITEMS
--- =========================
 create table if not exists public.plan_items (
-  id uuid primary key default uuid_generate_v4(),
-  plan_id uuid not null references public.plans(id) on delete cascade,
-  title text not null,
-  status text default 'not_done' check (status in ('done','not_done','partial')),
-  proof_image text,
-  created_at timestamp default now()
+  id uuid primary key default gen_random_uuid(),
+  plan_id uuid references public.plans(id) on delete cascade,
+  title text,
+  status text,
+  proof_image text
 );
 
-create index if not exists idx_planitems_plan_id on public.plan_items(plan_id);
-
--- =========================
--- MESSAGES
--- =========================
 create table if not exists public.messages (
-  id uuid primary key default uuid_generate_v4(),
-  sender_id uuid not null references public.users(id) on delete cascade,
-  receiver_id uuid not null references public.users(id) on delete cascade,
+  id uuid primary key default gen_random_uuid(),
+  sender_id uuid references public.users(id),
+  receiver_id uuid references public.users(id),
   text text,
   image_url text,
   created_at timestamp default now()
 );
 
-create index if not exists idx_messages_sender on public.messages(sender_id);
-create index if not exists idx_messages_receiver on public.messages(receiver_id);
+-- Backfill for already existing auth users.
+insert into public.users (id, email, role)
+select id, email, 'client'
+from auth.users
+on conflict (id) do nothing;
 
--- =========================
--- ROW LEVEL SECURITY (DEV MODE - OPEN ACCESS)
--- =========================
+create or replace function public.handle_new_user()
+returns trigger as $$
+begin
+  insert into public.users (id, email, role)
+  values (new.id, new.email, 'client')
+  on conflict (id) do nothing;
+  return new;
+end;
+$$ language plpgsql security definer;
 
-alter table public.users enable row level security;
-alter table public.clients enable row level security;
-alter table public.check_ins enable row level security;
-alter table public.food_logs enable row level security;
-alter table public.plans enable row level security;
-alter table public.plan_items enable row level security;
-alter table public.messages enable row level security;
+drop trigger if exists on_auth_user_created on auth.users;
 
--- DEV OPEN POLICIES
-create policy if not exists "dev_full_access_users" on public.users for all using (true) with check (true);
-create policy if not exists "dev_full_access_clients" on public.clients for all using (true) with check (true);
-create policy if not exists "dev_full_access_checkins" on public.check_ins for all using (true) with check (true);
-create policy if not exists "dev_full_access_foodlogs" on public.food_logs for all using (true) with check (true);
-create policy if not exists "dev_full_access_plans" on public.plans for all using (true) with check (true);
-create policy if not exists "dev_full_access_planitems" on public.plan_items for all using (true) with check (true);
-create policy if not exists "dev_full_access_messages" on public.messages for all using (true) with check (true);
+create trigger on_auth_user_created
+after insert on auth.users
+for each row execute function public.handle_new_user();
 
--- =========================
--- NOTES
--- =========================
--- DEV MODE ONLY
--- Replace policies before production
-
--- =========================
--- DONE
--- =========================

@@ -13,6 +13,7 @@ class ClientDashboardPage extends StatelessWidget {
     required this.onOpenKnowledgeBase,
     required this.onOpenChat,
     required this.onAdd,
+    required this.onOpenProfile,
   });
 
   final VoidCallback onOpenFood;
@@ -23,6 +24,7 @@ class ClientDashboardPage extends StatelessWidget {
   final VoidCallback onOpenKnowledgeBase;
   final VoidCallback onOpenChat;
   final VoidCallback onAdd;
+  final VoidCallback onOpenProfile;
 
   @override
   Widget build(BuildContext context) {
@@ -68,12 +70,37 @@ class ClientDashboardPage extends StatelessWidget {
                       ),
                     ],
                   ),
-                  _NetworkAvatar(
-                    imageUrl:
-                        'https://dimg.dreamflow.cloud/v1/image/friendly+female+face',
-                    size: 48,
-                    borderColor: colors.primary,
-                    borderWidth: 2,
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: <Widget>[
+                      InkWell(
+                        borderRadius: BorderRadius.circular(16),
+                        onTap: onOpenProfile,
+                        child: Container(
+                          width: 44,
+                          height: 44,
+                          decoration: BoxDecoration(
+                            color: colors.surface,
+                            borderRadius: BorderRadius.circular(16),
+                            border: Border.all(color: theme.dividerColor),
+                          ),
+                          alignment: Alignment.center,
+                          child: Icon(
+                            Icons.person_rounded,
+                            size: 20,
+                            color: colors.onSurface,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      _NetworkAvatar(
+                        imageUrl:
+                            'https://dimg.dreamflow.cloud/v1/image/friendly+female+face',
+                        size: 48,
+                        borderColor: colors.primary,
+                        borderWidth: 2,
+                      ),
+                    ],
                   ),
                 ],
               ),

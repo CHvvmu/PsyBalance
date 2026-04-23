@@ -1,19 +1,19 @@
 import 'package:flutter/material.dart';
 
 import '../../features/admin/admin_page.dart';
-import '../../features/auth/auth_failure.dart';
 import '../../features/auth/auth_page.dart';
 import '../../features/auth/auth_service.dart';
 import '../../features/auth/user_role.dart';
 import '../../features/chat/chat_page.dart';
 import '../../features/checkin/checkin_page.dart';
-import '../../features/coach_panel/coach_client_details_page.dart';
-import '../../features/coach_panel/coach_clients_page.dart';
+import '../../features/coach_panel/presentation/coach_client_details_page.dart';
+import '../../features/coach_panel/presentation/coach_clients_page.dart';
 import '../../features/content/knowledge_base_page.dart';
 import '../../features/dashboard/dashboard_page.dart';
 import '../../features/food_log/food_log_page.dart';
 import '../../features/onboarding/onboarding_page.dart';
 import '../../features/plan/plan_page.dart';
+import '../../features/profile/profile_page.dart';
 
 class AppRouter {
   AppRouter({required this.authService});
@@ -30,6 +30,7 @@ class AppRouter {
   static const String clientPlan = '/client/plan';
   static const String clientChat = '/client/chat';
   static const String clientKnowledgeBase = '/client/knowledge-base';
+  static const String profile = '/profile';
 
   static const String coachPanel = '/coach/panel';
   static const String coachClientDetails = '/coach/client-details';
@@ -50,6 +51,7 @@ class AppRouter {
     clientPlan,
     clientChat,
     clientKnowledgeBase,
+    profile,
   };
 
   static const Set<String> _coachRoutes = <String>{
@@ -57,10 +59,12 @@ class AppRouter {
     coachClientDetails,
     coachChat,
     coachPlanEditor,
+    profile,
   };
 
   static const Set<String> _adminRoutes = <String>{
     adminPanel,
+    profile,
   };
 
   static final Set<String> _protectedRoutes = <String>{
@@ -92,17 +96,17 @@ class AppRouter {
     final String routeName = _normalizeRouteName(settings.name);
     final bool isAuthenticated = authService.currentUser != null;
     final UserRole? role = authService.cachedRole;
+    print('ROUTE: $routeName role: $role');
 
     if (_authRoutes.contains(routeName)) {
       return _buildByRoute(routeName);
     }
 
-    if (_protectedRoutes.contains(routeName) && !isAuthenticated) {
-      return _buildAuthRoute();
+    if (isAuthenticated && role == null) {
+      return _buildLoadingRoute();
     }
 
-    if (_protectedRoutes.contains(routeName) && role == null) {
-      _forceLogoutOnInvalidRole();
+    if (_protectedRoutes.contains(routeName) && !isAuthenticated) {
       return _buildAuthRoute();
     }
 
@@ -164,6 +168,8 @@ class AppRouter {
         return _buildCoachChatRoute(routeName: clientChat);
       case clientKnowledgeBase:
         return _buildKnowledgeBaseRoute();
+      case profile:
+        return _buildProfileRoute();
       case coachPanel:
         return _buildCoachClientsRoute();
       case coachClientDetails:
@@ -195,6 +201,14 @@ class AppRouter {
     return MaterialPageRoute<dynamic>(
       settings: const RouteSettings(name: auth),
       builder: (_) => AuthPage(authService: authService),
+    );
+  }
+
+  MaterialPageRoute<dynamic> _buildLoadingRoute() {
+    return MaterialPageRoute<dynamic>(
+      builder: (_) => const Scaffold(
+        body: Center(child: CircularProgressIndicator()),
+      ),
     );
   }
 
@@ -231,6 +245,7 @@ class AppRouter {
               Navigator.of(context).pushNamed(clientKnowledgeBase),
           onOpenChat: () => Navigator.of(context).pushNamed(clientChat),
           onAdd: () => Navigator.of(context).pushNamed(clientCheckIn),
+          onOpenProfile: () => Navigator.of(context).pushNamed(profile),
         );
       },
     );
@@ -244,7 +259,18 @@ class AppRouter {
           onOpenClient: (_) => Navigator.of(context).pushNamed(coachClientDetails),
           onOpenChat: (_) => Navigator.of(context).pushNamed(coachChat),
           onCreateClient: () => Navigator.of(context).pushNamed(coachClientDetails),
+          onOpenProfile: () => Navigator.of(context).pushNamed(profile),
         );
+      },
+    );
+  }
+
+  MaterialPageRoute<dynamic> _buildProfileRoute() {
+    return MaterialPageRoute<dynamic>(
+      settings: const RouteSettings(name: profile),
+      builder: (_) {
+        final UserRole role = authService.cachedRole ?? UserRole.client;
+        return ProfilePage(authService: authService, role: role);
       },
     );
   }
@@ -322,15 +348,6 @@ class AppRouter {
     );
   }
 
-  void _forceLogoutOnInvalidRole() {
-    Future<void>.microtask(() async {
-      try {
-        await authService.logout();
-      } on AuthFailure {
-        authService.clearRoleCache();
-      }
-    });
-  }
 }
 
 class _SplashRedirectPage extends StatefulWidget {
@@ -405,7 +422,22 @@ class _SplashRedirectPageState extends State<_SplashRedirectPage> {
     final String routeToOpen =
         targetRoute == AppRouter.splash ? AppRouter.auth : targetRoute;
     _hasNavigated = true;
-    Navigator.of(context).pushReplacementNamed(routeToOpen);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) {
+        return;
+      }
+
+      final String? routeName = ModalRoute.of(context)?.settings.name;
+      if (routeName != AppRouter.splash) {
+        debugPrint(
+          'SplashRedirect: skip navigation to $routeToOpen, current route: $routeName',
+        );
+        return;
+      }
+
+      debugPrint('SplashRedirect: navigate to $routeToOpen');
+      Navigator.of(context).pushReplacementNamed(routeToOpen);
+    });
   }
 
   @override

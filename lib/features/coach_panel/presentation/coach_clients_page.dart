@@ -8,11 +8,13 @@ class CoachClientsPage extends StatefulWidget {
     required this.onOpenClient,
     required this.onOpenChat,
     required this.onCreateClient,
+    required this.onOpenProfile,
   });
 
   final ValueChanged<String> onOpenClient;
   final ValueChanged<String> onOpenChat;
   final VoidCallback onCreateClient;
+  final VoidCallback onOpenProfile;
 
   @override
   State<CoachClientsPage> createState() => _CoachClientsPageState();
@@ -142,24 +144,49 @@ class _CoachClientsPageState extends State<CoachClientsPage> {
                     ),
                   ),
                   const SizedBox(width: 12),
-                  InkWell(
-                    borderRadius: BorderRadius.circular(16),
-                    onTap: () {},
-                    child: Container(
-                      width: 44,
-                      height: 44,
-                      decoration: BoxDecoration(
-                        color: colors.surface,
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: <Widget>[
+                      InkWell(
                         borderRadius: BorderRadius.circular(16),
-                        border: Border.all(color: theme.dividerColor),
+                        onTap: widget.onOpenProfile,
+                        child: Container(
+                          width: 44,
+                          height: 44,
+                          decoration: BoxDecoration(
+                            color: colors.surface,
+                            borderRadius: BorderRadius.circular(16),
+                            border: Border.all(color: theme.dividerColor),
+                          ),
+                          alignment: Alignment.center,
+                          child: Icon(
+                            Icons.person_rounded,
+                            size: 20,
+                            color: colors.onSurface,
+                          ),
+                        ),
                       ),
-                      alignment: Alignment.center,
-                      child: Icon(
-                        Icons.tune_rounded,
-                        size: 20,
-                        color: colors.onSurface,
+                      const SizedBox(width: 10),
+                      InkWell(
+                        borderRadius: BorderRadius.circular(16),
+                        onTap: () {},
+                        child: Container(
+                          width: 44,
+                          height: 44,
+                          decoration: BoxDecoration(
+                            color: colors.surface,
+                            borderRadius: BorderRadius.circular(16),
+                            border: Border.all(color: theme.dividerColor),
+                          ),
+                          alignment: Alignment.center,
+                          child: Icon(
+                            Icons.tune_rounded,
+                            size: 20,
+                            color: colors.onSurface,
+                          ),
+                        ),
                       ),
-                    ),
+                    ],
                   ),
                 ],
               ),
@@ -381,10 +408,12 @@ class _ClientRiskCard extends StatelessWidget {
                   ),
                 ),
                 const SizedBox(width: 8),
-                OutlinedButton.icon(
-                  onPressed: onOpenChat,
-                  icon: const Icon(Icons.chat_bubble_outline_rounded, size: 16),
-                  label: const Text('Чат'),
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: onOpenChat,
+                    icon: const Icon(Icons.chat_bubble_outline_rounded, size: 16),
+                    label: const Text('Чат'),
+                  ),
                 ),
               ],
             ),

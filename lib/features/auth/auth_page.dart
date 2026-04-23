@@ -62,13 +62,13 @@ class _AuthPageState extends State<AuthPage> {
         }
 
         if (loginResult.hasSession) {
+          await widget.authService.loadUserRole();
           final String targetRoute =
-              AppRouter(authService: widget.authService).homeRouteForRole(
+              AppRouter(authService: widget.authService).entryRouteForRole(
             loginResult.role,
           );
-          Navigator.of(context).pushNamedAndRemoveUntil(
-            targetRoute,
-            (Route<dynamic> route) => false,
+          debugPrint(
+            'AuthPage: login session detected, waiting auth listener redirect to $targetRoute',
           );
           return;
         }
@@ -98,13 +98,13 @@ class _AuthPageState extends State<AuthPage> {
         }
 
         if (registerResult.hasSession) {
+          await widget.authService.loadUserRole();
           final String targetRoute =
-              AppRouter(authService: widget.authService).homeRouteForRole(
+              AppRouter(authService: widget.authService).entryRouteForRole(
             registerResult.role,
           );
-          Navigator.of(context).pushNamedAndRemoveUntil(
-            targetRoute,
-            (Route<dynamic> route) => false,
+          debugPrint(
+            'AuthPage: register session detected, waiting auth listener redirect to $targetRoute',
           );
           return;
         }
