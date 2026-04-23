@@ -1,0 +1,30 @@
+# Local environment files
+.env
+.env.*
+!.env.example
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# Dart / Flutter
+.dart_tool/
+.packages
+.pub/
+build/
+coverage/
+
+# Platform ephemeral/generated
+android/.gradle/
+android/app/debug/
+android/app/profile/
+android/app/release/
+ios/Flutter/ephemeral/
+linux/flutter/ephemeral/
+macos/Flutter/ephemeral/
+windows/flutter/ephemeral/
+
+# Logs
+*.log
+

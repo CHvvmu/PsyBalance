@@ -1,0 +1,4 @@
+class CheckinService {
+  const CheckinService();
+}
+

@@ -1,0 +1,4 @@
+class ChatService {
+  const ChatService();
+}
+

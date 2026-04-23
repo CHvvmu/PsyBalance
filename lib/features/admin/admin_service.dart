@@ -1,0 +1,4 @@
+class AdminService {
+  const AdminService();
+}
+
