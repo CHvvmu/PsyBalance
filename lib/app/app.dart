@@ -56,7 +56,10 @@ class _PsyBalanceAppState extends State<PsyBalanceApp> {
         }
         break;
       case AuthChangeEvent.signedIn:
-        _resolveRoleAndRedirect(forceRefresh: true);
+        _resolveRoleAndRedirect(
+          forceRefresh: true,
+          preferOnboardingForClient: true,
+        );
         break;
       case AuthChangeEvent.signedOut:
         _authService.clearRoleCache();
@@ -76,7 +79,10 @@ class _PsyBalanceAppState extends State<PsyBalanceApp> {
     await _resolveRoleAndRedirect(forceRefresh: true);
   }
 
-  Future<void> _resolveRoleAndRedirect({required bool forceRefresh}) async {
+  Future<void> _resolveRoleAndRedirect({
+    required bool forceRefresh,
+    bool preferOnboardingForClient = false,
+  }) async {
     if (_isResolvingRole) {
       return;
     }
@@ -89,7 +95,10 @@ class _PsyBalanceAppState extends State<PsyBalanceApp> {
         return;
       }
 
-      final String target = _appRouter.entryRouteForRole(role);
+      final String target =
+          preferOnboardingForClient && role == UserRole.client
+          ? AppRouter.onboarding
+          : _appRouter.entryRouteForRole(role);
       if (_lastRoute == target) {
         return;
       }

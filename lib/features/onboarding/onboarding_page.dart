@@ -58,7 +58,7 @@ class _OnboardingPageState extends State<OnboardingPage> {
   final TextEditingController _targetWeightController = TextEditingController();
   final TextEditingController _heightController = TextEditingController();
 
-  int _selectedGoalIndex = 0;
+  int? _selectedGoalIndex;
   bool _isLoading = false;
   final Set<String> _selectedDifficulties = <String>{
     'Сон',
@@ -78,20 +78,27 @@ class _OnboardingPageState extends State<OnboardingPage> {
       return;
     }
 
+    if (!_canCompleteOnboarding) {
+      _showError('Заполните все поля онбординга.');
+      return;
+    }
+
+    final int selectedGoalIndex = _selectedGoalIndex!;
+
     final double? currentWeight = _parseWeight(_currentWeightController.text);
-    if (currentWeight == null && _currentWeightController.text.trim().isNotEmpty) {
+    if (currentWeight == null) {
       _showError('Введите корректный текущий вес');
       return;
     }
 
     final double? targetWeight = _parseWeight(_targetWeightController.text);
-    if (targetWeight == null && _targetWeightController.text.trim().isNotEmpty) {
+    if (targetWeight == null) {
       _showError('Введите корректный целевой вес');
       return;
     }
 
     final int? heightCm = _parseHeight(_heightController.text);
-    if (heightCm == null && _heightController.text.trim().isNotEmpty) {
+    if (heightCm == null) {
       _showError('Введите корректный рост');
       return;
     }
@@ -102,7 +109,7 @@ class _OnboardingPageState extends State<OnboardingPage> {
 
     try {
       await widget.authService.completeOnboarding(
-        goal: _goalOptions[_selectedGoalIndex].title,
+        goal: _goalOptions[selectedGoalIndex].title,
         currentWeightKg: currentWeight,
         targetWeightKg: targetWeight,
         heightCm: heightCm,
@@ -131,8 +138,9 @@ class _OnboardingPageState extends State<OnboardingPage> {
     });
 
     try {
+      final int fallbackGoalIndex = _selectedGoalIndex ?? 0;
       await widget.authService.completeOnboarding(
-        goal: _goalOptions[_selectedGoalIndex].title,
+        goal: _goalOptions[fallbackGoalIndex].title,
       );
       widget.onCompleted();
     } on AuthFailure catch (e) {
@@ -175,6 +183,14 @@ class _OnboardingPageState extends State<OnboardingPage> {
       return null;
     }
     return parsed;
+  }
+
+  bool get _canCompleteOnboarding {
+    return _selectedGoalIndex != null &&
+        _parseWeight(_currentWeightController.text) != null &&
+        _parseWeight(_targetWeightController.text) != null &&
+        _parseHeight(_heightController.text) != null &&
+        _selectedDifficulties.isNotEmpty;
   }
 
   @override
@@ -300,6 +316,7 @@ class _OnboardingPageState extends State<OnboardingPage> {
                               hintText: 'кг',
                               prefixIcon: Icon(Icons.scale_rounded),
                             ),
+                            onChanged: (_) => setState(() {}),
                           ),
                         ),
                         const SizedBox(width: 12),
@@ -314,6 +331,7 @@ class _OnboardingPageState extends State<OnboardingPage> {
                               hintText: 'кг',
                               prefixIcon: Icon(Icons.flag_rounded),
                             ),
+                            onChanged: (_) => setState(() {}),
                           ),
                         ),
                       ],
@@ -327,6 +345,7 @@ class _OnboardingPageState extends State<OnboardingPage> {
                         hintText: 'см',
                         prefixIcon: Icon(Icons.straight_rounded),
                       ),
+                      onChanged: (_) => setState(() {}),
                     ),
                   ],
                 ),
@@ -382,7 +401,7 @@ class _OnboardingPageState extends State<OnboardingPage> {
               ),
               const SizedBox(height: 24),
               ElevatedButton(
-                onPressed: _isLoading ? null : _submit,
+                onPressed: _isLoading || !_canCompleteOnboarding ? null : _submit,
                 child: _isLoading
                     ? const SizedBox(
                         width: 18,

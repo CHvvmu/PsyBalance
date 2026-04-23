@@ -7,8 +7,22 @@ create table if not exists public.users (
   id uuid primary key references auth.users(id) on delete cascade,
   email text,
   role text check (role in ('client', 'coach', 'administrator')) not null default 'client',
+  onboarding_completed boolean not null default false,
+  onboarding_goal text,
+  onboarding_current_weight_kg double precision,
+  onboarding_target_weight_kg double precision,
+  onboarding_height_cm integer,
+  onboarding_difficulties text[] not null default '{}',
   created_at timestamp with time zone default now()
 );
+
+alter table public.users
+  add column if not exists onboarding_completed boolean not null default false,
+  add column if not exists onboarding_goal text,
+  add column if not exists onboarding_current_weight_kg double precision,
+  add column if not exists onboarding_target_weight_kg double precision,
+  add column if not exists onboarding_height_cm integer,
+  add column if not exists onboarding_difficulties text[] not null default '{}';
 
 create table if not exists public.clients (
   id uuid primary key default gen_random_uuid(),

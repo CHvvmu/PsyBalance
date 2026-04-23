@@ -147,11 +147,36 @@ class AuthService {
     int? heightCm,
     List<String>? difficulties,
   }) async {
+    final String? userId = currentUser?.id;
+    if (userId == null) {
+      throw AuthFailure('Unauthenticated');
+    }
+
     try {
+      final String normalizedGoal = goal.trim();
+      final List<String> normalizedDifficulties =
+          (difficulties ?? <String>[])
+              .map((String item) => item.trim())
+              .where((String item) => item.isNotEmpty)
+              .toList();
+
+      final bool isCompleted =
+          normalizedGoal.isNotEmpty &&
+          currentWeightKg != null &&
+          currentWeightKg > 0 &&
+          targetWeightKg != null &&
+          targetWeightKg > 0 &&
+          heightCm != null &&
+          heightCm > 0 &&
+          normalizedDifficulties.isNotEmpty;
+
       final Map<String, dynamic> data = <String, dynamic>{
-        'onboarding_completed': true,
-        'onboarding_goal': goal,
+        'onboarding_completed': isCompleted,
       };
+
+      if (normalizedGoal.isNotEmpty) {
+        data['onboarding_goal'] = normalizedGoal;
+      }
 
       if (currentWeightKg != null) {
         data['onboarding_current_weight_kg'] = currentWeightKg;
@@ -162,21 +187,53 @@ class AuthService {
       if (heightCm != null) {
         data['onboarding_height_cm'] = heightCm;
       }
-      if (difficulties != null && difficulties.isNotEmpty) {
-        data['onboarding_difficulties'] = difficulties;
+      if (normalizedDifficulties.isNotEmpty) {
+        data['onboarding_difficulties'] = normalizedDifficulties;
       }
+
+      await _persistOnboardingDataToUsersTable(
+        userId: userId,
+        onboardingCompleted: isCompleted,
+        onboardingGoal: normalizedGoal.isEmpty ? null : normalizedGoal,
+        currentWeightKg: currentWeightKg,
+        targetWeightKg: targetWeightKg,
+        heightCm: heightCm,
+        difficulties: normalizedDifficulties,
+      );
 
       await _client.auth.updateUser(
         UserAttributes(
           data: data,
         ),
       );
-      _cachedOnboardingCompleted = true;
+      _cachedOnboardingCompleted = isCompleted;
     } on AuthException catch (e) {
       throw AuthFailure(e.message);
     } catch (_) {
       throw AuthFailure('Network error. Please try again.');
     }
+  }
+
+  Future<void> _persistOnboardingDataToUsersTable({
+    required String userId,
+    required bool onboardingCompleted,
+    String? onboardingGoal,
+    double? currentWeightKg,
+    double? targetWeightKg,
+    int? heightCm,
+    required List<String> difficulties,
+  }) async {
+    final Map<String, dynamic> payload = <String, dynamic>{
+      'id': userId,
+      'onboarding_completed': onboardingCompleted,
+      'onboarding_goal': onboardingGoal,
+      'onboarding_current_weight_kg': currentWeightKg,
+      'onboarding_target_weight_kg': targetWeightKg,
+      'onboarding_height_cm': heightCm,
+      'onboarding_difficulties': difficulties,
+    };
+
+    await _client.from('users').upsert(payload, onConflict: 'id');
   }
 
   Future<RegisterResult> register({
@@ -307,13 +364,43 @@ class AuthService {
 
   bool _readOnboardingCompletedFromCurrentUser() {
     final dynamic raw = currentUser?.userMetadata?['onboarding_completed'];
+    final bool flag;
     if (raw is bool) {
-      return raw;
+      flag = raw;
+    } else if (raw is String) {
+      flag = raw.toLowerCase() == 'true';
+    } else {
+      flag = false;
     }
-    if (raw is String) {
-      return raw.toLowerCase() == 'true';
+
+    if (!flag) {
+      return false;
     }
-    return false;
+
+    return _hasRequiredOnboardingData(currentUser?.userMetadata);
+  }
+
+  bool _hasRequiredOnboardingData(Map<String, dynamic>? metadata) {
+    if (metadata == null) {
+      return false;
+    }
+
+    final String? goal = metadata['onboarding_goal'] as String?;
+    final num? currentWeight = metadata['onboarding_current_weight_kg'] as num?;
+    final num? targetWeight = metadata['onboarding_target_weight_kg'] as num?;
+    final num? height = metadata['onboarding_height_cm'] as num?;
+    final List<dynamic>? difficulties = metadata['onboarding_difficulties'] as List<dynamic>?;
+
+    return goal != null &&
+        goal.trim().isNotEmpty &&
+        currentWeight != null &&
+        currentWeight > 0 &&
+        targetWeight != null &&
+        targetWeight > 0 &&
+        height != null &&
+        height > 0 &&
+        difficulties != null &&
+        difficulties.any((dynamic item) => item is String && item.trim().isNotEmpty);
   }
 
   UserRole? _readRoleFromCurrentUserMetadata() {
