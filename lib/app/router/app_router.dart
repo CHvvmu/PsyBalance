@@ -86,7 +86,7 @@ class AppRouter {
   }
 
   String entryRouteForRole(UserRole role) {
-    if (!authService.isOnboardingCompleted) {
+    if (role == UserRole.client && !authService.isOnboardingCompleted) {
       return onboarding;
     }
     return homeRouteForRole(role);
@@ -115,7 +115,9 @@ class AppRouter {
     }
 
     if (role != null) {
-      if (!authService.isOnboardingCompleted && routeName != onboarding) {
+      if (role == UserRole.client &&
+          !authService.isOnboardingCompleted &&
+          routeName != onboarding) {
         return _buildByRoute(onboarding);
       }
       if (authService.isOnboardingCompleted && routeName == onboarding) {

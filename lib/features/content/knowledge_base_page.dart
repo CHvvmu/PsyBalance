@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import '../../app/router/app_router.dart';
+
 class KnowledgeBasePage extends StatefulWidget {
   const KnowledgeBasePage({super.key});
 
@@ -73,6 +75,17 @@ class _KnowledgeBasePageState extends State<KnowledgeBasePage> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: <Widget>[
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
+                child: Align(
+                  alignment: Alignment.centerLeft,
+                  child: IconButton(
+                    onPressed: _navigateBack,
+                    icon: const Icon(Icons.arrow_back_rounded),
+                    tooltip: 'Назад',
+                  ),
+                ),
+              ),
               Padding(
                 padding: const EdgeInsets.fromLTRB(24, 24, 24, 12),
                 child: Column(
@@ -323,6 +336,19 @@ class _KnowledgeBasePageState extends State<KnowledgeBasePage> {
           ),
         ),
       ),
+    );
+  }
+
+  void _navigateBack() {
+    final NavigatorState navigator = Navigator.of(context);
+    if (navigator.canPop()) {
+      navigator.pop();
+      return;
+    }
+
+    navigator.pushNamedAndRemoveUntil(
+      AppRouter.clientDashboard,
+      (Route<dynamic> route) => false,
     );
   }
 }

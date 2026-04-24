@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../../app/router/app_router.dart';
 import '../auth/auth_failure.dart';
 import '../auth/auth_service.dart';
 import '../auth/user_role.dart';
@@ -39,6 +40,16 @@ class _ProfilePageState extends State<ProfilePage> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: <Widget>[
+              Row(
+                children: <Widget>[
+                  IconButton(
+                    onPressed: _navigateBack,
+                    icon: const Icon(Icons.arrow_back_rounded),
+                    tooltip: 'Назад',
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
               _ProfileHeader(
                 displayName: displayName,
                 email: email,
@@ -178,8 +189,32 @@ class _ProfilePageState extends State<ProfilePage> {
     }
   }
 
+  void _navigateBack() {
+    final NavigatorState navigator = Navigator.of(context);
+    if (navigator.canPop()) {
+      navigator.pop();
+      return;
+    }
+
+    navigator.pushNamedAndRemoveUntil(
+      _homeRouteForRole(widget.role),
+      (Route<dynamic> route) => false,
+    );
+  }
+
   bool _isClientOrCoach(UserRole role) {
     return role == UserRole.client || role == UserRole.coach;
+  }
+
+  String _homeRouteForRole(UserRole role) {
+    switch (role) {
+      case UserRole.client:
+        return AppRouter.clientDashboard;
+      case UserRole.coach:
+        return AppRouter.coachPanel;
+      case UserRole.administrator:
+        return AppRouter.adminPanel;
+    }
   }
 
   String _resolveDisplayName({required UserRole role}) {
