@@ -1,5 +1,9 @@
 # PsyBalance
 
+
+https://github.com/user-attachments/assets/415313b8-c93c-418b-88c4-4ce7ae036851
+
+
 Initial Flutter project skeleton for MVP.
 
 ## Environment configuration
