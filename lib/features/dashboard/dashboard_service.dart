@@ -1,4 +1,0 @@
-class DashboardService {
-  const DashboardService();
-}
-

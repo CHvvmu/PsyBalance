@@ -1,4 +1,0 @@
-class FoodLogService {
-  const FoodLogService();
-}
-
