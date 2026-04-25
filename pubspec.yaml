@@ -10,12 +10,14 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
+  image_picker: ^1.2.1
   supabase_flutter: ^2.10.3
   google_fonts: ^6.3.0
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
+  shared_preferences: ^2.5.5
   flutter_lints: ^4.0.0
 
 flutter:

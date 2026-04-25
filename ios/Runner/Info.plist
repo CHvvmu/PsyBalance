@@ -24,6 +24,10 @@
 	<string>????</string>
 	<key>CFBundleVersion</key>
 	<string>$(FLUTTER_BUILD_NUMBER)</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Приложению нужен доступ к галерее для выбора фото еды.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>Приложению нужен доступ к камере для съемки фото еды.</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 	<key>UIApplicationSceneManifest</key>
