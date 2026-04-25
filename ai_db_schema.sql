@@ -45,7 +45,57 @@ create table if not exists public.food_logs (
   user_id uuid references public.users(id) on delete cascade,
   image_url text,
   meal_type text,
+  notes text,
   created_at timestamp default now()
+);
+
+alter table public.food_logs
+  enable row level security;
+
+drop policy if exists "food_logs_insert_own_rows" on public.food_logs;
+
+create policy "food_logs_insert_own_rows"
+on public.food_logs
+for insert
+to authenticated
+with check (
+  user_id = auth.uid()
+);
+
+drop policy if exists "food_logs_select_own_rows" on public.food_logs;
+
+create policy "food_logs_select_own_rows"
+on public.food_logs
+for select
+to authenticated
+using (
+  user_id = auth.uid()
+);
+
+insert into storage.buckets (id, name, public)
+values ('food_images', 'food_images', true)
+on conflict (id) do update set public = excluded.public;
+
+drop policy if exists "food_images_insert_own_files" on storage.objects;
+
+create policy "food_images_insert_own_files"
+on storage.objects
+for insert
+to authenticated
+with check (
+  bucket_id = 'food_images'
+  and (storage.foldername(name))[1] = auth.uid()::text
+);
+
+drop policy if exists "food_images_select_own_files" on storage.objects;
+
+create policy "food_images_select_own_files"
+on storage.objects
+for select
+to authenticated
+using (
+  bucket_id = 'food_images'
+  and (storage.foldername(name))[1] = auth.uid()::text
 );
 
 create table if not exists public.plans (
