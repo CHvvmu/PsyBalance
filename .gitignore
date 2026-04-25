@@ -1,6 +1,7 @@
 # Flutter
 build/
 .dart_tool/
+.flutter-plugins-dependencies
 
 # IDE
 .idea/
