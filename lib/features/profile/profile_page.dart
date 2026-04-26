@@ -1,9 +1,11 @@
 import 'package:flutter/material.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../../app/router/app_router.dart';
 import '../auth/auth_failure.dart';
 import '../auth/auth_service.dart';
 import '../auth/user_role.dart';
+import 'presentation/edit_profile_page.dart';
 
 class ProfilePage extends StatefulWidget {
   const ProfilePage({
@@ -20,17 +22,140 @@ class ProfilePage extends StatefulWidget {
 }
 
 class _ProfilePageState extends State<ProfilePage> {
+  final SupabaseClient _client = Supabase.instance.client;
+  bool _isLoading = true;
+  Map<String, dynamic>? _userData;
   bool _notificationsEnabled = true;
   bool _isLoggingOut = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadUserProfile();
+  }
+
+  Future<void> _openEditProfile() async {
+    final bool? result = await Navigator.of(context, rootNavigator: true).push<bool>(
+      MaterialPageRoute<bool>(
+        settings: const RouteSettings(name: AppRouter.profileEdit),
+        builder: (_) => const EditProfilePage(),
+      ),
+    );
+
+    if (result == true && mounted) {
+      await _loadUserProfile();
+    }
+  }
+
+  Future<void> _openAvatarEdit() async {
+    final bool? result = await Navigator.of(context, rootNavigator: true).push<bool>(
+      MaterialPageRoute<bool>(
+        settings: const RouteSettings(name: AppRouter.profileEdit),
+        builder: (_) => const EditProfilePage(openAvatarPickerOnStart: true),
+      ),
+    );
+
+    if (result == true && mounted) {
+      await _loadUserProfile();
+    }
+  }
+
+  Future<void> _loadUserProfile() async {
+    final User? currentUser = _client.auth.currentUser;
+    if (!mounted) {
+      return;
+    }
+
+    setState(() {
+      _isLoading = true;
+    });
+
+    if (currentUser == null) {
+      debugPrint('PROFILE LOAD START');
+      debugPrint('PROFILE LOAD ERROR: current user is null');
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _userData = null;
+        _isLoading = false;
+      });
+      return;
+    }
+
+    debugPrint('PROFILE LOAD START');
+
+    try {
+      final Map<String, dynamic>? row = await _client
+          .from('users')
+          .select()
+          .eq('id', currentUser.id)
+          .maybeSingle();
+
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _userData = row;
+        _isLoading = false;
+        _notificationsEnabled =
+            row?['notifications_enabled'] as bool? ?? true;
+      });
+      debugPrint('PROFILE LOAD SUCCESS');
+    } catch (e) {
+      debugPrint('PROFILE LOAD ERROR: $e');
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _userData = null;
+        _isLoading = false;
+      });
+    }
+  }
+
+  String _profileText(String key, {String fallback = '—'}) {
+    final dynamic value = _userData?[key];
+    final String text = value?.toString().trim() ?? '';
+    return text.isEmpty ? fallback : text;
+  }
+
+  String _avatarUrl() {
+    final String rowAvatarUrl = _profileText('avatar_url', fallback: '').trim();
+    if (rowAvatarUrl.isNotEmpty) {
+      return rowAvatarUrl;
+    }
+
+    final dynamic metadataAvatarUrl = widget.authService.currentUser?.userMetadata?['avatar_url'];
+    return metadataAvatarUrl?.toString().trim() ?? '';
+  }
 
   @override
   Widget build(BuildContext context) {
     final ThemeData theme = Theme.of(context);
     final ColorScheme colors = theme.colorScheme;
     final TextTheme textTheme = theme.textTheme;
-    final String email = widget.authService.currentUser?.email ?? 'anna.smith@example.com';
-    final String displayName = _resolveDisplayName(role: widget.role);
-    final String avatarUrl = _resolveAvatarUrl(role: widget.role);
+    final String email =
+        _profileText('email', fallback: widget.authService.currentUser?.email ?? '—');
+    final String displayName = _profileText(
+      'full_name',
+      fallback: _profileText('name', fallback: 'Без имени'),
+    );
+    final String avatarUrl = _avatarUrl();
+
+    if (_isLoading && _userData == null) {
+      return Scaffold(
+        backgroundColor: theme.scaffoldBackgroundColor,
+        body: const SafeArea(
+          child: Center(
+            child: CircularProgressIndicator(),
+          ),
+        ),
+      );
+    }
 
     return Scaffold(
       backgroundColor: theme.scaffoldBackgroundColor,
@@ -54,11 +179,8 @@ class _ProfilePageState extends State<ProfilePage> {
                 displayName: displayName,
                 email: email,
                 avatarUrl: avatarUrl,
-                onEditPressed: () {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('Редактирование профиля появится позже.')),
-                  );
-                },
+                onAvatarPressed: _openAvatarEdit,
+                onEditPressed: _openEditProfile,
               ),
               const SizedBox(height: 24),
               if (_isClientOrCoach(widget.role)) ...<Widget>[
@@ -107,7 +229,7 @@ class _ProfilePageState extends State<ProfilePage> {
                       mainAxisSize: MainAxisSize.min,
                       children: <Widget>[
                         Text(
-                          'Русский',
+                          _languageLabel(),
                           style: textTheme.bodyMedium,
                         ),
                         const SizedBox(width: 4),
@@ -132,17 +254,43 @@ class _ProfilePageState extends State<ProfilePage> {
 
   List<Widget> _buildAccountRows({required UserRole role}) {
     if (role == UserRole.client) {
-      return const <Widget>[
+      return <Widget>[
         _ProfileMenuRow(
-          icon: Icons.workspace_premium_rounded,
-          label: 'Моя подписка',
-          trailing: Icon(Icons.chevron_right_rounded),
+          icon: Icons.badge_rounded,
+          label: 'Полное имя',
+          trailing: Text(
+            _profileText('full_name', fallback: 'Без имени'),
+            style: Theme.of(context).textTheme.bodyMedium,
+          ),
         ),
-        SizedBox(height: 12),
+        const SizedBox(height: 12),
         _ProfileMenuRow(
-          icon: Icons.person_rounded,
-          label: 'Мой тренер',
-          trailing: Icon(Icons.chevron_right_rounded),
+          icon: Icons.flag_rounded,
+          label: 'Цель',
+          trailing: Text(
+            _profileText('goal'),
+            style: Theme.of(context).textTheme.bodyMedium,
+          ),
+        ),
+        const SizedBox(height: 12),
+        _ProfileMenuRow(
+          icon: Icons.fitness_center_rounded,
+          label: 'Активность',
+          trailing: Text(
+            _profileText('activity_level'),
+            style: Theme.of(context).textTheme.bodyMedium,
+          ),
+        ),
+        const SizedBox(height: 12),
+        _ProfileMenuRow(
+          icon: Icons.restaurant_rounded,
+          label: 'Пищевые предпочтения',
+          trailing: Text(
+            _profileText('food_preferences'),
+            style: Theme.of(context).textTheme.bodyMedium,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
         ),
       ];
     }
@@ -217,25 +365,15 @@ class _ProfilePageState extends State<ProfilePage> {
     }
   }
 
-  String _resolveDisplayName({required UserRole role}) {
-    switch (role) {
-      case UserRole.client:
-        return 'Анна Смирнова';
-      case UserRole.coach:
-        return 'Михаил Волков';
-      case UserRole.administrator:
-        return 'Администратор PsyBalance';
-    }
-  }
-
-  String _resolveAvatarUrl({required UserRole role}) {
-    switch (role) {
-      case UserRole.client:
-        return 'https://dimg.dreamflow.cloud/v1/image/smiling+woman+professional+portrait';
-      case UserRole.coach:
-        return 'https://dimg.dreamflow.cloud/v1/image/professional+male+health+coach+smiling';
-      case UserRole.administrator:
-        return 'https://dimg.dreamflow.cloud/v1/image/professional+person+portrait';
+  String _languageLabel() {
+    final String language = _profileText('language', fallback: 'ru');
+    switch (language) {
+      case 'ru':
+        return 'Русский';
+      case 'en':
+        return 'English';
+      default:
+        return language;
     }
   }
 }
@@ -245,12 +383,14 @@ class _ProfileHeader extends StatelessWidget {
     required this.displayName,
     required this.email,
     required this.avatarUrl,
+    required this.onAvatarPressed,
     required this.onEditPressed,
   });
 
   final String displayName;
   final String email;
   final String avatarUrl;
+  final VoidCallback onAvatarPressed;
   final VoidCallback onEditPressed;
 
   @override
@@ -261,38 +401,52 @@ class _ProfileHeader extends StatelessWidget {
 
     return Column(
       children: <Widget>[
-        Container(
-          width: 120,
-          height: 120,
-          padding: const EdgeInsets.all(4),
-          decoration: BoxDecoration(
-            shape: BoxShape.circle,
-            color: colors.surface,
-            border: Border.all(color: colors.surface, width: 4),
-            boxShadow: <BoxShadow>[
-              BoxShadow(
-                color: Colors.black.withValues(alpha: 0.08),
-                blurRadius: 14,
-                offset: const Offset(0, 6),
-              ),
-            ],
-          ),
-          child: ClipOval(
-            child: Image.network(
-              avatarUrl,
-              fit: BoxFit.cover,
-              errorBuilder: (BuildContext context, Object _, StackTrace? __) {
-                return Container(
-                  color: colors.primary.withValues(alpha: 0.2),
-                  alignment: Alignment.center,
-                  child: Icon(
-                    Icons.person_rounded,
-                    size: 48,
-                    color: colors.onSurface,
-                  ),
-                );
-              },
+        GestureDetector(
+          onTap: onAvatarPressed,
+          child: Container(
+            width: 120,
+            height: 120,
+            padding: const EdgeInsets.all(4),
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: colors.surface,
+              border: Border.all(color: colors.surface, width: 4),
+              boxShadow: <BoxShadow>[
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: 0.08),
+                  blurRadius: 14,
+                  offset: const Offset(0, 6),
+                ),
+              ],
             ),
+            child: avatarUrl.trim().isNotEmpty
+                ? ClipOval(
+                    child: Image.network(
+                      avatarUrl,
+                      fit: BoxFit.cover,
+                      errorBuilder:
+                          (BuildContext context, Object _, StackTrace? __) {
+                        return Container(
+                          color: colors.primary.withValues(alpha: 0.2),
+                          alignment: Alignment.center,
+                          child: Icon(
+                            Icons.person_rounded,
+                            size: 48,
+                            color: colors.onSurface,
+                          ),
+                        );
+                      },
+                    ),
+                  )
+                : Container(
+                    color: colors.primary.withValues(alpha: 0.2),
+                    alignment: Alignment.center,
+                    child: Icon(
+                      Icons.person_rounded,
+                      size: 48,
+                      color: colors.onSurface,
+                    ),
+                  ),
           ),
         ),
         const SizedBox(height: 16),

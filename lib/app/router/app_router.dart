@@ -5,7 +5,7 @@ import '../../features/auth/auth_page.dart';
 import '../../features/auth/auth_service.dart';
 import '../../features/auth/user_role.dart';
 import '../../features/chat/chat_page.dart';
-import '../../features/checkin/checkin_page.dart';
+import '../../features/checkin/check_in_page.dart';
 import '../../features/coach_panel/presentation/coach_client_details_page.dart';
 import '../../features/coach_panel/presentation/coach_clients_page.dart';
 import '../../features/content/knowledge_base_page.dart';
@@ -14,6 +14,7 @@ import '../../features/food_log/food_log_page.dart';
 import '../../features/onboarding/onboarding_page.dart';
 import '../../features/plan/plan_page.dart';
 import '../../features/profile/profile_page.dart';
+import '../../features/profile/presentation/edit_profile_page.dart';
 
 class AppRouter {
   AppRouter({required this.authService});
@@ -31,6 +32,7 @@ class AppRouter {
   static const String clientChat = '/client/chat';
   static const String clientKnowledgeBase = '/client/knowledge-base';
   static const String profile = '/profile';
+  static const String profileEdit = '/profile/edit';
 
   static const String coachPanel = '/coach/panel';
   static const String coachClientDetails = '/coach/client-details';
@@ -52,6 +54,7 @@ class AppRouter {
     clientChat,
     clientKnowledgeBase,
     profile,
+    profileEdit,
   };
 
   static const Set<String> _coachRoutes = <String>{
@@ -60,11 +63,13 @@ class AppRouter {
     coachChat,
     coachPlanEditor,
     profile,
+    profileEdit,
   };
 
   static const Set<String> _adminRoutes = <String>{
     adminPanel,
     profile,
+    profileEdit,
   };
 
   static final Set<String> _protectedRoutes = <String>{
@@ -96,7 +101,7 @@ class AppRouter {
     final String routeName = _normalizeRouteName(settings.name);
     final bool isAuthenticated = authService.currentUser != null;
     final UserRole? role = authService.cachedRole;
-    print('ROUTE: $routeName role: $role');
+    debugPrint('ROUTE: $routeName role: $role');
 
     if (_authRoutes.contains(routeName)) {
       return _buildByRoute(routeName);
@@ -161,7 +166,7 @@ class AppRouter {
       case clientDashboard:
         return _buildClientDashboardRoute();
       case clientCheckIn:
-        return _buildDailyCheckInRoute();
+        return _buildCheckInRoute();
       case clientFoodLog:
         return _buildFoodLogRoute();
       case clientPlan:
@@ -172,6 +177,8 @@ class AppRouter {
         return _buildKnowledgeBaseRoute();
       case profile:
         return _buildProfileRoute();
+      case profileEdit:
+        return _buildProfileEditRoute();
       case coachPanel:
         return _buildCoachClientsRoute();
       case coachClientDetails:
@@ -277,10 +284,17 @@ class AppRouter {
     );
   }
 
-  MaterialPageRoute<dynamic> _buildDailyCheckInRoute() {
+  MaterialPageRoute<dynamic> _buildProfileEditRoute() {
+    return MaterialPageRoute<dynamic>(
+      settings: const RouteSettings(name: profileEdit),
+      builder: (_) => const EditProfilePage(),
+    );
+  }
+
+  MaterialPageRoute<dynamic> _buildCheckInRoute() {
     return MaterialPageRoute<dynamic>(
       settings: const RouteSettings(name: clientCheckIn),
-      builder: (_) => const DailyCheckInPage(),
+      builder: (_) => const CheckInPage(),
     );
   }
 

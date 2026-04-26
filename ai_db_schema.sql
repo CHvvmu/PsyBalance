@@ -24,6 +24,29 @@ alter table public.users
   add column if not exists onboarding_height_cm integer,
   add column if not exists onboarding_difficulties text[] not null default '{}';
 
+alter table public.users
+  add column if not exists name text,
+  add column if not exists avatar_url text,
+  add column if not exists goal text,
+  add column if not exists stress_level int,
+  add column if not exists energy_level int,
+  add column if not exists sleep_quality int,
+  add column if not exists activity_level text,
+  add column if not exists food_preferences text,
+  add column if not exists updated_at timestamp default now();
+
+alter table public.users
+  add column if not exists full_name text,
+  add column if not exists phone text,
+  add column if not exists gender text,
+  add column if not exists birth_date date,
+  add column if not exists height_cm int,
+  add column if not exists weight_kg int,
+  add column if not exists notifications_enabled boolean default true,
+  add column if not exists language text default 'ru';
+
+create index if not exists idx_users_role on public.users(role);
+
 create table if not exists public.clients (
   id uuid primary key default gen_random_uuid(),
   user_id uuid references public.users(id) on delete cascade,
@@ -95,6 +118,47 @@ for select
 to authenticated
 using (
   bucket_id = 'food_images'
+  and (storage.foldername(name))[1] = auth.uid()::text
+);
+
+insert into storage.buckets (id, name, public)
+values ('avatars', 'avatars', true)
+on conflict (id) do update set public = excluded.public;
+
+drop policy if exists "avatars_insert_own_files" on storage.objects;
+
+create policy "avatars_insert_own_files"
+on storage.objects
+for insert
+to authenticated
+with check (
+  bucket_id = 'avatars'
+  and (storage.foldername(name))[1] = auth.uid()::text
+);
+
+drop policy if exists "avatars_update_own_files" on storage.objects;
+
+create policy "avatars_update_own_files"
+on storage.objects
+for update
+to authenticated
+using (
+  bucket_id = 'avatars'
+  and (storage.foldername(name))[1] = auth.uid()::text
+)
+with check (
+  bucket_id = 'avatars'
+  and (storage.foldername(name))[1] = auth.uid()::text
+);
+
+drop policy if exists "avatars_select_own_files" on storage.objects;
+
+create policy "avatars_select_own_files"
+on storage.objects
+for select
+to authenticated
+using (
+  bucket_id = 'avatars'
   and (storage.foldername(name))[1] = auth.uid()::text
 );
 

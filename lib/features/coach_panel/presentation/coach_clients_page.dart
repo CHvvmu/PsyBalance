@@ -1,4 +1,7 @@
 import 'package:flutter/material.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
+
+import 'add_client_page.dart';
 
 enum _RiskLevel { high, medium, low }
 
@@ -23,57 +26,95 @@ class CoachClientsPage extends StatefulWidget {
 class _CoachClientsPageState extends State<CoachClientsPage> {
   final TextEditingController _searchController = TextEditingController();
 
-  static const List<_ClientRiskItem> _clients = <_ClientRiskItem>[
-    _ClientRiskItem(
-      name: 'Александра Иванова',
-      avatarDesc: 'woman with glasses',
-      lastActive: 'Был(а) в сети: 10 мин назад',
-      riskLevel: _RiskLevel.high,
-      riskLabel: '3 пропуска',
-      foodStat: '1/3',
-      foodDone: false,
-      activityStat: '0/1',
-      activityDone: false,
-    ),
-    _ClientRiskItem(
-      name: 'Дмитрий Петров',
-      avatarDesc: 'man with beard',
-      lastActive: 'Был(а) в сети: 2 часа назад',
-      riskLevel: _RiskLevel.medium,
-      riskLabel: '1 пропуск',
-      foodStat: '3/3',
-      foodDone: true,
-      activityStat: '0/1',
-      activityDone: false,
-    ),
-    _ClientRiskItem(
-      name: 'Елена Соколова',
-      avatarDesc: 'smiling woman',
-      lastActive: 'Был(а) в сети: вчера',
-      riskLevel: _RiskLevel.low,
-      riskLabel: 'В норме',
-      foodStat: '3/3',
-      foodDone: true,
-      activityStat: '1/1',
-      activityDone: true,
-    ),
-    _ClientRiskItem(
-      name: 'Иван Кузнецов',
-      avatarDesc: 'young man',
-      lastActive: 'Был(а) в сети: 5 мин назад',
-      riskLevel: _RiskLevel.low,
-      riskLabel: 'В норме',
-      foodStat: '2/3',
-      foodDone: true,
-      activityStat: '1/1',
-      activityDone: true,
-    ),
-  ];
+  final SupabaseClient _client = Supabase.instance.client;
+  List<_ClientRiskItem> _clients = <_ClientRiskItem>[];
+
+  @override
+  void initState() {
+    super.initState();
+    _loadClients();
+  }
 
   @override
   void dispose() {
     _searchController.dispose();
     super.dispose();
+  }
+
+  Future<void> _loadClients() async {
+    debugPrint('CLIENTS LOAD START');
+
+    final User? currentUser = _client.auth.currentUser;
+    if (currentUser == null) {
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _clients = <_ClientRiskItem>[];
+      });
+      return;
+    }
+
+    try {
+      final List<dynamic> response = await _client
+          .from('clients')
+          .select()
+          .eq('coach_id', currentUser.id);
+
+      debugPrint('CLIENTS LOAD SUCCESS: ${response.length}');
+      if (response.isEmpty) {
+        debugPrint('CLIENTS LOAD EMPTY');
+      }
+
+      final List<_ClientRiskItem> mappedClients = response
+          .map((dynamic rowData) {
+            final Map<String, dynamic> row = rowData as Map<String, dynamic>;
+            final String userId = row['user_id']?.toString() ?? '';
+
+            return _ClientRiskItem(
+              name: userId,
+              avatarDesc: 'client',
+              lastActive: '—',
+              riskLevel: _RiskLevel.low,
+              riskLabel: 'Новый',
+              foodStat: '0/0',
+              foodDone: false,
+              activityStat: '0/0',
+              activityDone: false,
+            );
+          })
+          .toList();
+
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _clients = mappedClients;
+      });
+    } catch (e) {
+      debugPrint('CLIENTS LOAD ERROR: $e');
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _clients = <_ClientRiskItem>[];
+      });
+    }
+  }
+
+  Future<void> _openAddClientPage() async {
+    final bool? result = await Navigator.of(context).push<bool>(
+      MaterialPageRoute<bool>(
+        builder: (_) => const AddClientPage(),
+      ),
+    );
+
+    if (result == true && mounted) {
+      await _loadClients();
+    }
   }
 
   @override
@@ -90,7 +131,7 @@ class _CoachClientsPageState extends State<CoachClientsPage> {
     return Scaffold(
       backgroundColor: theme.scaffoldBackgroundColor,
       floatingActionButton: FloatingActionButton.extended(
-        onPressed: widget.onCreateClient,
+        onPressed: _openAddClientPage,
         backgroundColor: colors.primary,
         foregroundColor: colors.onPrimary,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
@@ -200,10 +241,10 @@ class _CoachClientsPageState extends State<CoachClientsPage> {
                 ),
               ),
               const SizedBox(height: 20),
-              SingleChildScrollView(
+              const SingleChildScrollView(
                 scrollDirection: Axis.horizontal,
                 child: Row(
-                  children: const <Widget>[
+                  children: <Widget>[
                     _RiskStatCard(
                       count: '2',
                       title: 'Высокий риск',
