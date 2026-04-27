@@ -8,6 +8,8 @@ import '../../features/chat/chat_page.dart';
 import '../../features/checkin/check_in_page.dart';
 import '../../features/coach_panel/presentation/coach_client_details_page.dart';
 import '../../features/coach_panel/presentation/coach_clients_page.dart';
+import '../../features/coach_panel/presentation/coach_plan_editor_page.dart';
+import '../../features/coach_panel/presentation/coach_route_args.dart';
 import '../../features/content/knowledge_base_page.dart';
 import '../../features/dashboard/dashboard_page.dart';
 import '../../features/food_log/food_log_page.dart';
@@ -104,7 +106,7 @@ class AppRouter {
     debugPrint('ROUTE: $routeName role: $role');
 
     if (_authRoutes.contains(routeName)) {
-      return _buildByRoute(routeName);
+      return _buildByRoute(settings);
     }
 
     if (isAuthenticated && role == null) {
@@ -116,21 +118,21 @@ class AppRouter {
     }
 
     if (role != null && !_isAllowedForRole(role: role, routeName: routeName)) {
-      return _buildByRoute(homeRouteForRole(role));
+      return _buildByRoute(RouteSettings(name: homeRouteForRole(role)));
     }
 
     if (role != null) {
       if (role == UserRole.client &&
           !authService.isOnboardingCompleted &&
           routeName != onboarding) {
-        return _buildByRoute(onboarding);
+        return _buildByRoute(const RouteSettings(name: onboarding));
       }
       if (authService.isOnboardingCompleted && routeName == onboarding) {
-        return _buildByRoute(homeRouteForRole(role));
+        return _buildByRoute(RouteSettings(name: homeRouteForRole(role)));
       }
     }
 
-    return _buildByRoute(routeName);
+    return _buildByRoute(settings);
   }
 
   String _normalizeRouteName(String? routeName) {
@@ -155,7 +157,8 @@ class AppRouter {
     }
   }
 
-  Route<dynamic> _buildByRoute(String routeName) {
+  Route<dynamic> _buildByRoute(RouteSettings settings) {
+    final String routeName = _normalizeRouteName(settings.name);
     switch (routeName) {
       case splash:
         return _buildSplashRoute();
@@ -172,7 +175,7 @@ class AppRouter {
       case clientPlan:
         return _buildClientPlanRoute();
       case clientChat:
-        return _buildCoachChatRoute(routeName: clientChat);
+        return _buildCoachChatRoute(settings);
       case clientKnowledgeBase:
         return _buildKnowledgeBaseRoute();
       case profile:
@@ -182,11 +185,11 @@ class AppRouter {
       case coachPanel:
         return _buildCoachClientsRoute();
       case coachClientDetails:
-        return _buildCoachClientDetailsRoute();
+        return _buildCoachClientDetailsRoute(settings);
       case coachChat:
-        return _buildCoachChatRoute(routeName: coachChat);
+        return _buildCoachChatRoute(settings);
       case coachPlanEditor:
-        return _buildCoachPlanEditorRoute();
+        return _buildCoachPlanEditorRoute(settings);
       case adminPanel:
         return _buildAdminPanelRoute();
       default:
@@ -265,9 +268,24 @@ class AppRouter {
       settings: const RouteSettings(name: coachPanel),
       builder: (BuildContext context) {
         return CoachClientsPage(
-          onOpenClient: (_) => Navigator.of(context).pushNamed(coachClientDetails),
-          onOpenChat: (_) => Navigator.of(context).pushNamed(coachChat),
-          onCreateClient: () => Navigator.of(context).pushNamed(coachClientDetails),
+          onOpenClient: (CoachClientRouteArgs args) {
+            debugPrint(
+              'ROUTE coachClientDetails PUSH: clientId=${args.clientId} clientName=${args.clientName}',
+            );
+            Navigator.of(context).pushNamed(
+              coachClientDetails,
+              arguments: args,
+            );
+          },
+          onOpenChat: (CoachClientRouteArgs args) {
+            debugPrint(
+              'ROUTE coachChat PUSH FROM LIST: clientId=${args.clientId} clientName=${args.clientName}',
+            );
+            Navigator.of(context).pushNamed(
+              coachChat,
+              arguments: args,
+            );
+          },
           onOpenProfile: () => Navigator.of(context).pushNamed(profile),
         );
       },
@@ -298,30 +316,65 @@ class AppRouter {
     );
   }
 
-  MaterialPageRoute<dynamic> _buildCoachClientDetailsRoute() {
+  MaterialPageRoute<dynamic> _buildCoachClientDetailsRoute(RouteSettings settings) {
+    final CoachClientRouteArgs? args = _coachClientArgsFrom(settings);
+    final String clientId = args?.clientId.trim() ?? '';
+    final String clientName = args?.clientName.trim() ?? '';
+
+    debugPrint(
+      'ROUTE coachClientDetails BUILD: clientId=$clientId clientName=$clientName',
+    );
+
     return MaterialPageRoute<dynamic>(
-      settings: const RouteSettings(name: coachClientDetails),
+      settings: RouteSettings(name: coachClientDetails, arguments: settings.arguments),
       builder: (BuildContext context) {
         return CoachClientDetailsPage(
+          clientId: clientId,
+          clientName: clientName,
           onBack: () => Navigator.of(context).maybePop(),
           onOpenCall: () {
             ScaffoldMessenger.of(context).showSnackBar(
               const SnackBar(content: Text('Видеозвонок будет доступен позже.')),
             );
           },
-          onOpenPlanEditor: () => Navigator.of(context).pushNamed(coachPlanEditor),
-          onOpenChat: () => Navigator.of(context).pushNamed(coachChat),
+          onOpenPlanEditor: (CoachClientRouteArgs nextArgs) {
+            debugPrint(
+              'ROUTE coachPlanEditor PUSH FROM DETAILS: clientId=${nextArgs.clientId} clientName=${nextArgs.clientName}',
+            );
+            Navigator.of(context).pushNamed(
+              coachPlanEditor,
+              arguments: nextArgs,
+            );
+          },
+          onOpenChat: (CoachClientRouteArgs nextArgs) {
+            debugPrint(
+              'ROUTE coachChat PUSH FROM DETAILS: clientId=${nextArgs.clientId} clientName=${nextArgs.clientName}',
+            );
+            Navigator.of(context).pushNamed(
+              coachChat,
+              arguments: nextArgs,
+            );
+          },
         );
       },
     );
   }
 
-  MaterialPageRoute<dynamic> _buildCoachChatRoute({required String routeName}) {
+  MaterialPageRoute<dynamic> _buildCoachChatRoute(RouteSettings settings) {
+    final CoachClientRouteArgs? args = _coachClientArgsFrom(settings);
+    final String clientId = args?.clientId.trim() ?? '';
+    final String routeName = _normalizeRouteName(settings.name);
+    final String peerName = routeName == clientChat
+        ? 'Михаил Волков'
+        : (args?.clientName.trim().isNotEmpty == true ? args!.clientName.trim() : 'Клиент');
+
+    debugPrint('ROUTE ${routeName == clientChat ? 'clientChat' : 'coachChat'} BUILD: clientId=$clientId clientName=$peerName');
+
     return MaterialPageRoute<dynamic>(
-      settings: RouteSettings(name: routeName),
+      settings: RouteSettings(name: routeName, arguments: settings.arguments),
       builder: (_) {
-        return const CoachChatPage(
-          peerName: 'Михаил Волков',
+        return CoachChatPage(
+          peerName: peerName,
           avatarUrl:
               'https://dimg.dreamflow.cloud/v1/image/professional+male+health+coach+smiling',
         );
@@ -350,11 +403,30 @@ class AppRouter {
     );
   }
 
-  MaterialPageRoute<dynamic> _buildCoachPlanEditorRoute() {
-    return MaterialPageRoute<dynamic>(
-      settings: const RouteSettings(name: coachPlanEditor),
-      builder: (_) => const ActivityPlanPage(title: 'Редактор плана клиента'),
+  MaterialPageRoute<dynamic> _buildCoachPlanEditorRoute(RouteSettings settings) {
+    final CoachClientRouteArgs? args = _coachClientArgsFrom(settings);
+    final String clientId = args?.clientId.trim() ?? '';
+    final String clientName = args?.clientName.trim() ?? '';
+
+    debugPrint(
+      'ROUTE coachPlanEditor BUILD: clientId=$clientId clientName=$clientName',
     );
+
+    return MaterialPageRoute<dynamic>(
+      settings: RouteSettings(name: coachPlanEditor, arguments: settings.arguments),
+      builder: (_) => CoachPlanEditorPage(
+        clientId: clientId,
+        clientName: clientName,
+      ),
+    );
+  }
+
+  CoachClientRouteArgs? _coachClientArgsFrom(RouteSettings settings) {
+    final Object? arguments = settings.arguments;
+    if (arguments is CoachClientRouteArgs) {
+      return arguments;
+    }
+    return null;
   }
 
   MaterialPageRoute<dynamic> _buildKnowledgeBaseRoute() {

@@ -1,17 +1,23 @@
 import 'package:flutter/material.dart';
 
+import 'coach_route_args.dart';
+
 class CoachClientDetailsPage extends StatefulWidget {
   const CoachClientDetailsPage({
     super.key,
+    required this.clientId,
+    required this.clientName,
     required this.onOpenChat,
     required this.onOpenCall,
     required this.onOpenPlanEditor,
     required this.onBack,
   });
 
-  final VoidCallback onOpenChat;
+  final String clientId;
+  final String clientName;
+  final ValueChanged<CoachClientRouteArgs> onOpenChat;
   final VoidCallback onOpenCall;
-  final VoidCallback onOpenPlanEditor;
+  final ValueChanged<CoachClientRouteArgs> onOpenPlanEditor;
   final VoidCallback onBack;
 
   @override
@@ -41,6 +47,43 @@ class _CoachClientDetailsPageState extends State<CoachClientDetailsPage> {
     setState(() {
       _activities[index] = _activities[index].copyWith(isActive: value);
     });
+  }
+
+  String get _displayClientId => widget.clientId.trim();
+
+  String get _displayClientName {
+    final String trimmed = widget.clientName.trim();
+    return trimmed.isEmpty ? 'Клиент' : trimmed;
+  }
+
+  void _openChat() {
+    final CoachClientRouteArgs args = CoachClientRouteArgs(
+      clientId: _displayClientId,
+      clientName: _displayClientName,
+    );
+
+    debugPrint('COACH NAV CHAT OPEN: clientId=${args.clientId} clientName=${args.clientName}');
+    widget.onOpenChat(args);
+  }
+
+  void _openPlanEditor() {
+    final CoachClientRouteArgs args = CoachClientRouteArgs(
+      clientId: _displayClientId,
+      clientName: _displayClientName,
+    );
+
+    debugPrint(
+      'COACH NAV PLAN EDITOR OPEN: clientId=${args.clientId} clientName=${args.clientName}',
+    );
+    widget.onOpenPlanEditor(args);
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    debugPrint(
+      'COACH CLIENT DETAILS INIT: clientId=$_displayClientId, clientName=$_displayClientName',
+    );
   }
 
   @override
@@ -86,7 +129,7 @@ class _CoachClientDetailsPageState extends State<CoachClientDetailsPage> {
                             const SizedBox(width: 8),
                             _RoundActionIcon(
                               icon: Icons.chat_bubble_rounded,
-                              onTap: widget.onOpenChat,
+                              onTap: _openChat,
                             ),
                           ],
                         ),
@@ -107,7 +150,7 @@ class _CoachClientDetailsPageState extends State<CoachClientDetailsPage> {
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: <Widget>[
                               Text(
-                                'Анна Кузнецова',
+                                _displayClientName,
                                 style: textTheme.titleLarge?.copyWith(
                                   color: colors.onSurface,
                                   fontWeight: FontWeight.bold,
@@ -140,6 +183,13 @@ class _CoachClientDetailsPageState extends State<CoachClientDetailsPage> {
                                   color: colors.onSurface,
                                 ),
                               ),
+                              const SizedBox(height: 4),
+                              Text(
+                                'Client ID: $_displayClientId',
+                                style: textTheme.labelSmall?.copyWith(
+                                  color: colors.onSurface,
+                                ),
+                              ),
                             ],
                           ),
                         ),
@@ -163,8 +213,8 @@ class _CoachClientDetailsPageState extends State<CoachClientDetailsPage> {
                           ),
                         ),
                         const SizedBox(height: 12),
-                        Row(
-                          children: const <Widget>[
+                        const Row(
+                          children: <Widget>[
                             Expanded(
                               child: _MetricCard(
                                 title: 'Энергия',
@@ -289,7 +339,7 @@ class _CoachClientDetailsPageState extends State<CoachClientDetailsPage> {
                         }),
                         const SizedBox(height: 16),
                         ElevatedButton(
-                          onPressed: widget.onOpenPlanEditor,
+                          onPressed: _openPlanEditor,
                           child: const Text('Обновить план на неделю'),
                         ),
                       ],
@@ -324,7 +374,7 @@ class _CoachClientDetailsPageState extends State<CoachClientDetailsPage> {
                           ),
                           const SizedBox(height: 12),
                           Text(
-                            'Анна стабильно соблюдает питьевой режим, но пропускает вечерние чекины. Рекомендую сместить фокус на гигиену сна.',
+                            'Клиент стабильно соблюдает питьевой режим, но пропускает вечерние чекины. Рекомендую сместить фокус на гигиену сна.',
                             style: textTheme.bodyMedium,
                           ),
                           const SizedBox(height: 8),

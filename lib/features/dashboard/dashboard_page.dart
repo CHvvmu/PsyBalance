@@ -1,6 +1,9 @@
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
+
+import '../plan/plan_item_details_page.dart';
 
 class ClientDashboardPage extends StatelessWidget {
   const ClientDashboardPage({
@@ -31,8 +34,8 @@ class ClientDashboardPage extends StatelessWidget {
     final ThemeData theme = Theme.of(context);
     final ColorScheme colors = theme.colorScheme;
     final TextTheme textTheme = theme.textTheme;
-    final Color success = const Color(0xFF43A047);
-    final Color accent = const Color(0xFFE8DCCB);
+    const Color success = Color(0xFF43A047);
+    const Color accent = Color(0xFFE8DCCB);
 
     return Scaffold(
       backgroundColor: theme.scaffoldBackgroundColor,
@@ -252,104 +255,9 @@ class ClientDashboardPage extends StatelessWidget {
                 ],
               ),
               const SizedBox(height: 28),
-              Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: <Widget>[
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: <Widget>[
-                      Text(
-                        'План на сегодня',
-                        style: textTheme.titleMedium?.copyWith(color: colors.onSurface),
-                      ),
-                      TextButton(
-                        onPressed: onOpenPlan,
-                        child: Text(
-                          'См. всё',
-                          style: textTheme.labelLarge?.copyWith(color: colors.onSurface),
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 12),
-                  InkWell(
-                    onTap: onOpenPlan,
-                    borderRadius: BorderRadius.circular(24),
-                    child: Container(
-                      padding: const EdgeInsets.all(24),
-                      decoration: BoxDecoration(
-                        color: colors.primary,
-                        borderRadius: BorderRadius.circular(24),
-                        boxShadow: <BoxShadow>[
-                          BoxShadow(
-                            color: Colors.black.withValues(alpha: 0.06),
-                            blurRadius: 14,
-                            offset: const Offset(0, 4),
-                          ),
-                        ],
-                      ),
-                      child: Row(
-                        children: <Widget>[
-                          Container(
-                            width: 50,
-                            height: 50,
-                            decoration: BoxDecoration(
-                              color: colors.onPrimary.withValues(alpha: 0.2),
-                              borderRadius: BorderRadius.circular(16),
-                            ),
-                            alignment: Alignment.center,
-                            child: Icon(
-                              Icons.lightbulb_outline_rounded,
-                              size: 30,
-                              color: colors.onSurface,
-                            ),
-                          ),
-                          const SizedBox(width: 12),
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: <Widget>[
-                                Text(
-                                  'Урок PsyBalance: Осознанность',
-                                  style: textTheme.labelLarge?.copyWith(
-                                    color: colors.onSurface,
-                                  ),
-                                ),
-                                const SizedBox(height: 4),
-                                Text(
-                                  'Как отличить голод от скуки за 1 минуту',
-                                  style: textTheme.bodySmall?.copyWith(
-                                    color: colors.onSurface.withValues(alpha: 0.9),
-                                  ),
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                              ],
-                            ),
-                          ),
-                          const SizedBox(width: 8),
-                          Icon(
-                            Icons.arrow_forward_ios_rounded,
-                            size: 16,
-                            color: colors.onSurface,
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 10),
-                  OutlinedButton.icon(
-                    onPressed: onOpenKnowledgeBase,
-                    icon: const Icon(Icons.menu_book_rounded),
-                    label: const Text('Открыть базу знаний'),
-                  ),
-                  const SizedBox(height: 10),
-                  const _HabitPill(title: 'Завтрак: Фото сделано'),
-                  const SizedBox(height: 10),
-                  const _HabitPill(title: 'Прогулка 30 мин: В процессе'),
-                  const SizedBox(height: 10),
-                  const _HabitPill(title: 'Медитация: Ожидает'),
-                ],
+              _DailyPlanSection(
+                onOpenLegacyPlan: onOpenPlan,
+                onOpenKnowledgeBase: onOpenKnowledgeBase,
               ),
               const SizedBox(height: 28),
               Container(
@@ -431,6 +339,410 @@ class ClientDashboardPage extends StatelessWidget {
   }
 }
 
+class _DailyPlanSection extends StatefulWidget {
+  const _DailyPlanSection({
+    required this.onOpenLegacyPlan,
+    required this.onOpenKnowledgeBase,
+  });
+
+  final VoidCallback onOpenLegacyPlan;
+  final VoidCallback onOpenKnowledgeBase;
+
+  @override
+  State<_DailyPlanSection> createState() => _DailyPlanSectionState();
+}
+
+class _DailyPlanSectionState extends State<_DailyPlanSection> {
+  final SupabaseClient _client = Supabase.instance.client;
+
+  bool _isLoading = true;
+  String? _errorMessage;
+  String? _planId;
+  String? _weekStartLabel;
+  List<PlanItemData> _items = <PlanItemData>[];
+
+  @override
+  void initState() {
+    super.initState();
+    _loadPlan();
+  }
+
+  Future<void> _loadPlan() async {
+    final User? currentUser = _client.auth.currentUser;
+    debugPrint('PLAN LOAD START');
+
+    if (currentUser == null) {
+      debugPrint('PLAN LOAD ERROR: current user is null');
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _isLoading = false;
+        _errorMessage = 'Не удалось загрузить план';
+        _planId = null;
+        _weekStartLabel = null;
+        _items = <PlanItemData>[];
+      });
+      return;
+    }
+
+    try {
+      final Map<String, dynamic>? planRow = await _client
+          .from('plans')
+          .select('id, week_start')
+          .eq('user_id', currentUser.id)
+          .order('week_start', ascending: false)
+          .limit(1)
+          .maybeSingle();
+
+      if (planRow == null) {
+        debugPrint('PLAN LOAD EMPTY: no plan assigned');
+        if (!mounted) {
+          return;
+        }
+
+        setState(() {
+          _isLoading = false;
+          _errorMessage = null;
+          _planId = null;
+          _weekStartLabel = null;
+          _items = <PlanItemData>[];
+        });
+        return;
+      }
+
+      final String planId = planRow['id']?.toString() ?? '';
+      final String weekStartLabel = _formatWeekStart(planRow['week_start']?.toString());
+
+      final List<dynamic> rows = await _client
+          .from('plan_items')
+          .select('id, plan_id, title, description, status, created_at')
+          .eq('plan_id', planId);
+
+      final List<PlanItemData> items = rows
+          .map((dynamic rowData) => PlanItemData.fromMap(rowData as Map<String, dynamic>))
+          .toList()
+        ..sort((PlanItemData left, PlanItemData right) {
+          final DateTime? leftCreated = left.createdAt;
+          final DateTime? rightCreated = right.createdAt;
+
+          if (leftCreated == null && rightCreated == null) {
+            return 0;
+          }
+          if (leftCreated == null) {
+            return 1;
+          }
+          if (rightCreated == null) {
+            return -1;
+          }
+          return leftCreated.compareTo(rightCreated);
+        });
+
+      if (items.isEmpty) {
+        debugPrint('PLAN LOAD EMPTY: plan_id=$planId items=0');
+        if (!mounted) {
+          return;
+        }
+
+        setState(() {
+          _isLoading = false;
+          _errorMessage = null;
+          _planId = planId;
+          _weekStartLabel = weekStartLabel;
+          _items = <PlanItemData>[];
+        });
+        return;
+      }
+
+      debugPrint('PLAN LOAD SUCCESS: plan_id=$planId items=${items.length}');
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _isLoading = false;
+        _errorMessage = null;
+        _planId = planId;
+        _weekStartLabel = weekStartLabel;
+        _items = items;
+      });
+    } catch (error) {
+      debugPrint('PLAN LOAD ERROR: $error');
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _isLoading = false;
+        _errorMessage = 'Не удалось загрузить план';
+        _items = <PlanItemData>[];
+        _planId = null;
+        _weekStartLabel = null;
+      });
+    }
+  }
+
+  Future<void> _openItemDetails(PlanItemData item) async {
+    final bool? changed = await Navigator.of(context).push<bool>(
+      MaterialPageRoute<bool>(
+        builder: (_) => PlanItemDetailsPage(item: item),
+      ),
+    );
+
+    if (changed == true && mounted) {
+      await _loadPlan();
+    }
+  }
+
+  String _formatWeekStart(String? value) {
+    if (value == null || value.trim().isEmpty) {
+      return '';
+    }
+
+    final DateTime? parsed = DateTime.tryParse(value);
+    if (parsed == null) {
+      return '';
+    }
+
+    final DateTime normalized = DateUtils.dateOnly(parsed);
+    final String day = normalized.day.toString().padLeft(2, '0');
+    final String month = normalized.month.toString().padLeft(2, '0');
+    return '$day.$month.${normalized.year}';
+  }
+
+  Color _statusBackground(String status, ColorScheme colors) {
+    switch (status) {
+      case 'in_progress':
+        return colors.secondary.withValues(alpha: 0.2);
+      case 'done':
+        return const Color(0xFF43A047).withValues(alpha: 0.16);
+      default:
+        return colors.primary.withValues(alpha: 0.18);
+    }
+  }
+
+  Color _statusForeground(String status, ColorScheme colors) {
+    switch (status) {
+      case 'in_progress':
+        return colors.secondary;
+      case 'done':
+        return const Color(0xFF43A047);
+      default:
+        return colors.primary;
+    }
+  }
+
+  Widget _buildItemCard(PlanItemData item, ThemeData theme, ColorScheme colors) {
+    final String normalizedStatus = item.normalizedStatus;
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Material(
+        color: colors.surface,
+        borderRadius: BorderRadius.circular(18),
+        child: InkWell(
+          onTap: () => _openItemDetails(item),
+          borderRadius: BorderRadius.circular(18),
+          child: Container(
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(18),
+              border: Border.all(color: theme.dividerColor),
+            ),
+            child: Row(
+              children: <Widget>[
+                Expanded(
+                  child: Text(
+                    item.displayTitle,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.bodyLarge?.copyWith(
+                      color: colors.onSurface,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  decoration: BoxDecoration(
+                    color: _statusBackground(normalizedStatus, colors),
+                    borderRadius: BorderRadius.circular(999),
+                  ),
+                  child: Text(
+                    item.statusLabel,
+                    style: theme.textTheme.labelMedium?.copyWith(
+                      color: _statusForeground(normalizedStatus, colors),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildEmptyState(ThemeData theme, ColorScheme colors) {
+    final String message = _planId == null
+        ? 'План пока не назначен'
+        : 'В этом плане пока нет задач';
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: colors.surface,
+        borderRadius: BorderRadius.circular(24),
+        border: Border.all(color: theme.dividerColor),
+      ),
+      child: Column(
+        children: <Widget>[
+          Icon(
+            Icons.event_note_rounded,
+            size: 36,
+            color: colors.primary,
+          ),
+          const SizedBox(height: 12),
+          Text(
+            message,
+            style: theme.textTheme.bodyLarge?.copyWith(
+              color: colors.onSurface,
+              fontWeight: FontWeight.w600,
+            ),
+            textAlign: TextAlign.center,
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildLoadingState(ThemeData theme, ColorScheme colors) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(vertical: 28),
+      decoration: BoxDecoration(
+        color: colors.surface,
+        borderRadius: BorderRadius.circular(24),
+        border: Border.all(color: theme.dividerColor),
+      ),
+      child: const Center(
+        child: CircularProgressIndicator(),
+      ),
+    );
+  }
+
+  Widget _buildErrorState(ThemeData theme, ColorScheme colors) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: colors.surface,
+        borderRadius: BorderRadius.circular(24),
+        border: Border.all(color: theme.dividerColor),
+      ),
+      child: Column(
+        children: <Widget>[
+          Icon(
+            Icons.error_outline_rounded,
+            size: 36,
+            color: colors.error,
+          ),
+          const SizedBox(height: 12),
+          Text(
+            _errorMessage ?? 'Не удалось загрузить план',
+            style: theme.textTheme.bodyLarge?.copyWith(
+              color: colors.onSurface,
+              fontWeight: FontWeight.w600,
+            ),
+            textAlign: TextAlign.center,
+          ),
+          const SizedBox(height: 12),
+          TextButton(
+            onPressed: _loadPlan,
+            child: const Text('Повторить'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final ThemeData theme = Theme.of(context);
+    final ColorScheme colors = theme.colorScheme;
+
+    return Container(
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: colors.surface,
+        borderRadius: BorderRadius.circular(24),
+        boxShadow: <BoxShadow>[
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.08),
+            blurRadius: 20,
+            offset: const Offset(0, 8),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: <Widget>[
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: <Widget>[
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: <Widget>[
+                  Text(
+                    'План на сегодня',
+                    style: theme.textTheme.titleMedium?.copyWith(color: colors.onSurface),
+                  ),
+                  if (_weekStartLabel != null && _weekStartLabel!.isNotEmpty) ...<Widget>[
+                    const SizedBox(height: 4),
+                    Text(
+                      'Неделя от $_weekStartLabel',
+                      style: theme.textTheme.bodySmall,
+                    ),
+                  ],
+                ],
+              ),
+              TextButton(
+                onPressed: widget.onOpenLegacyPlan,
+                child: Text(
+                  'См. всё',
+                  style: theme.textTheme.labelLarge?.copyWith(color: colors.onSurface),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 14),
+          if (_isLoading)
+            _buildLoadingState(theme, colors)
+          else if (_errorMessage != null)
+            _buildErrorState(theme, colors)
+          else if (_items.isEmpty)
+            _buildEmptyState(theme, colors)
+          else
+            Column(
+              children: _items
+                  .map((PlanItemData item) => _buildItemCard(item, theme, colors))
+                  .toList(),
+            ),
+          const SizedBox(height: 12),
+          OutlinedButton.icon(
+            onPressed: widget.onOpenKnowledgeBase,
+            icon: const Icon(Icons.menu_book_rounded),
+            label: const Text('Открыть базу знаний'),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class _QuickActionButton extends StatelessWidget {
   const _QuickActionButton({
     required this.icon,
@@ -469,46 +781,6 @@ class _QuickActionButton extends StatelessWidget {
             ),
           ],
         ),
-      ),
-    );
-  }
-}
-
-class _HabitPill extends StatelessWidget {
-  const _HabitPill({required this.title});
-
-  final String title;
-
-  @override
-  Widget build(BuildContext context) {
-    final ThemeData theme = Theme.of(context);
-    final ColorScheme colors = theme.colorScheme;
-
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-      decoration: BoxDecoration(
-        color: colors.surface,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: theme.dividerColor),
-      ),
-      child: Row(
-        children: <Widget>[
-          Container(
-            width: 8,
-            height: 8,
-            decoration: BoxDecoration(
-              color: colors.primary,
-              borderRadius: BorderRadius.circular(999),
-            ),
-          ),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Text(
-              title,
-              style: theme.textTheme.bodyMedium?.copyWith(color: colors.onSurface),
-            ),
-          ),
-        ],
       ),
     );
   }

@@ -2,21 +2,18 @@ import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'add_client_page.dart';
-
-enum _RiskLevel { high, medium, low }
+import 'coach_route_args.dart';
 
 class CoachClientsPage extends StatefulWidget {
   const CoachClientsPage({
     super.key,
     required this.onOpenClient,
     required this.onOpenChat,
-    required this.onCreateClient,
     required this.onOpenProfile,
   });
 
-  final ValueChanged<String> onOpenClient;
-  final ValueChanged<String> onOpenChat;
-  final VoidCallback onCreateClient;
+  final ValueChanged<CoachClientRouteArgs> onOpenClient;
+  final ValueChanged<CoachClientRouteArgs> onOpenChat;
   final VoidCallback onOpenProfile;
 
   @override
@@ -24,10 +21,12 @@ class CoachClientsPage extends StatefulWidget {
 }
 
 class _CoachClientsPageState extends State<CoachClientsPage> {
+  final SupabaseClient _client = Supabase.instance.client;
   final TextEditingController _searchController = TextEditingController();
 
-  final SupabaseClient _client = Supabase.instance.client;
-  List<_ClientRiskItem> _clients = <_ClientRiskItem>[];
+  List<CoachClientCardData> _clients = <CoachClientCardData>[];
+  bool _isLoading = true;
+  String? _errorMessage;
 
   @override
   void initState() {
@@ -42,65 +41,132 @@ class _CoachClientsPageState extends State<CoachClientsPage> {
   }
 
   Future<void> _loadClients() async {
-    debugPrint('CLIENTS LOAD START');
+    debugPrint('COACH CLIENTS LOAD START');
 
     final User? currentUser = _client.auth.currentUser;
     if (currentUser == null) {
+      debugPrint('COACH CLIENTS LOAD ERROR: current user is null');
       if (!mounted) {
         return;
       }
 
       setState(() {
-        _clients = <_ClientRiskItem>[];
+        _clients = <CoachClientCardData>[];
+        _isLoading = false;
+        _errorMessage = 'Не удалось загрузить клиентов';
       });
       return;
     }
 
+    if (mounted) {
+      setState(() {
+        _isLoading = true;
+        _errorMessage = null;
+      });
+    }
+
     try {
-      final List<dynamic> response = await _client
+      final List<dynamic> clientRows = await _client
           .from('clients')
-          .select()
-          .eq('coach_id', currentUser.id);
+          .select('id, user_id, coach_id, created_at')
+          .eq('coach_id', currentUser.id)
+          .order('created_at', ascending: false);
 
-      debugPrint('CLIENTS LOAD SUCCESS: ${response.length}');
-      if (response.isEmpty) {
-        debugPrint('CLIENTS LOAD EMPTY');
-      }
+      debugPrint('COACH CLIENTS RAW CLIENTS: ${clientRows.length}');
 
-      final List<_ClientRiskItem> mappedClients = response
+      final List<String> userIds = clientRows
           .map((dynamic rowData) {
             final Map<String, dynamic> row = rowData as Map<String, dynamic>;
-            final String userId = row['user_id']?.toString() ?? '';
-
-            return _ClientRiskItem(
-              name: userId,
-              avatarDesc: 'client',
-              lastActive: '—',
-              riskLevel: _RiskLevel.low,
-              riskLabel: 'Новый',
-              foodStat: '0/0',
-              foodDone: false,
-              activityStat: '0/0',
-              activityDone: false,
-            );
+            return row['user_id']?.toString() ?? '';
           })
+          .where((String value) => value.isNotEmpty)
           .toList();
 
+      debugPrint('COACH CLIENTS USER IDS: $userIds');
+
+      final Map<String, Map<String, dynamic>> usersById = <String, Map<String, dynamic>>{};
+      if (userIds.isNotEmpty) {
+        try {
+          final List<dynamic> userRows = await _client
+              .from('users')
+              .select(
+                'id, full_name, email, avatar_url, birth_date, gender, goal, activity_level, last_activity_date, last_session_date, progress_status, notes, onboarding_completed',
+              )
+              .inFilter('id', userIds);
+
+          debugPrint('COACH CLIENTS RAW USERS: ${userRows.length}');
+
+          for (final dynamic rowData in userRows) {
+            final Map<String, dynamic> row = rowData as Map<String, dynamic>;
+            final String userId = row['id']?.toString() ?? '';
+            if (userId.isNotEmpty) {
+              usersById[userId] = row;
+              debugPrint('COACH CLIENTS RAW USER JSON: $row');
+            }
+          }
+        } catch (error, stackTrace) {
+          debugPrint('COACH CLIENTS USERS QUERY ERROR: $error');
+          debugPrint('COACH CLIENTS USERS QUERY STACK: $stackTrace');
+          debugPrint('COACH CLIENTS USERS QUERY FAILED FOR IDS: $userIds');
+        }
+      }
+
+      final List<CoachClientCardData> loadedClients = <CoachClientCardData>[];
+      for (final dynamic rowData in clientRows) {
+        try {
+          final Map<String, dynamic> row = rowData as Map<String, dynamic>;
+          final String userId = row['user_id']?.toString() ?? '';
+          if (userId.isEmpty) {
+            debugPrint('COACH CLIENTS SKIP ROW: missing user_id, raw=$row');
+            continue;
+          }
+
+          final Map<String, dynamic>? userRow = usersById[userId];
+          if (userRow == null) {
+            debugPrint('COACH CLIENTS SKIP CLIENT: missing user row for userId=$userId');
+            continue;
+          }
+
+          debugPrint('COACH CLIENTS PARSE USER JSON: $userRow');
+
+          final CoachClientCardData client = CoachClientCardData.fromUserRow(
+            clientId: userId,
+            row: userRow,
+          );
+
+          debugPrint(
+            'COACH CLIENTS LOAD ITEM: clientId=${client.clientId} clientName=${client.displayName}',
+          );
+
+          loadedClients.add(client);
+        } catch (error, stackTrace) {
+          debugPrint('COACH CLIENTS PARSE ERROR: $error');
+          debugPrint('COACH CLIENTS PARSE STACK: $stackTrace');
+          debugPrint('COACH CLIENTS BROKEN CLIENT ROW: $rowData');
+        }
+      }
+
+      debugPrint('COACH CLIENTS LOAD SUCCESS: ${loadedClients.length}');
+
       if (!mounted) {
         return;
       }
 
       setState(() {
-        _clients = mappedClients;
+        _clients = loadedClients;
+        _isLoading = false;
+        _errorMessage = null;
       });
-    } catch (e) {
-      debugPrint('CLIENTS LOAD ERROR: $e');
+    } catch (error) {
+      debugPrint('COACH CLIENTS LOAD ERROR: $error');
       if (!mounted) {
         return;
       }
 
       setState(() {
-        _clients = <_ClientRiskItem>[];
+        _clients = <CoachClientCardData>[];
+        _isLoading = false;
+        _errorMessage = 'Не удалось загрузить клиентов';
       });
     }
   }
@@ -117,6 +183,38 @@ class _CoachClientsPageState extends State<CoachClientsPage> {
     }
   }
 
+  bool _requiresAttention(CoachClientCardData client) {
+    final DateTime? lastActivity = client.lastActivityDate;
+    final bool staleActivity =
+        lastActivity == null || DateTime.now().difference(lastActivity).inDays >= 7;
+    final bool stagnating = client.displayProgressStatus.toLowerCase() == 'stagnating';
+    return staleActivity || stagnating;
+  }
+
+  void _openClient(CoachClientCardData client) {
+    debugPrint(
+      'COACH NAV CLIENT OPEN: clientId=${client.clientId} clientName=${client.displayName}',
+    );
+    widget.onOpenClient(
+      CoachClientRouteArgs(
+        clientId: client.clientId,
+        clientName: client.displayName,
+      ),
+    );
+  }
+
+  void _openChat(CoachClientCardData client) {
+    debugPrint(
+      'COACH NAV CHAT OPEN FROM LIST: clientId=${client.clientId} clientName=${client.displayName}',
+    );
+    widget.onOpenChat(
+      CoachClientRouteArgs(
+        clientId: client.clientId,
+        clientName: client.displayName,
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final ThemeData theme = Theme.of(context);
@@ -124,9 +222,26 @@ class _CoachClientsPageState extends State<CoachClientsPage> {
     final TextTheme textTheme = theme.textTheme;
     final String query = _searchController.text.trim().toLowerCase();
 
-    final List<_ClientRiskItem> filtered = _clients
-        .where((item) => item.name.toLowerCase().contains(query))
+    final List<CoachClientCardData> filteredClients = _clients
+        .where(
+          (client) =>
+              client.displayName.toLowerCase().contains(query) ||
+              client.email.toLowerCase().contains(query) ||
+              client.displayGoal.toLowerCase().contains(query) ||
+              client.displayActivityLevel.toLowerCase().contains(query) ||
+              client.displayProgressStatus.toLowerCase().contains(query),
+        )
         .toList();
+
+    final int attentionCount = _clients.where(_requiresAttention).length;
+    final int activeCount = _clients
+        .where((CoachClientCardData client) =>
+            client.displayProgressStatus.toLowerCase() == 'active')
+        .length;
+    final int stagnatingCount = _clients
+        .where((CoachClientCardData client) =>
+            client.displayProgressStatus.toLowerCase() == 'stagnating')
+        .length;
 
     return Scaffold(
       backgroundColor: theme.scaffoldBackgroundColor,
@@ -139,10 +254,11 @@ class _CoachClientsPageState extends State<CoachClientsPage> {
         label: const Text('Новый клиент'),
       ),
       body: SafeArea(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.all(24),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
+        child: RefreshIndicator(
+          onRefresh: _loadClients,
+          child: ListView(
+            physics: const AlwaysScrollableScrollPhysics(),
+            padding: const EdgeInsets.all(24),
             children: <Widget>[
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -178,7 +294,7 @@ class _CoachClientsPageState extends State<CoachClientsPage> {
                         ),
                         const SizedBox(height: 4),
                         Text(
-                          'Всего 12 клиентов • 2 требуют внимания',
+                          'Всего ${_clients.length} клиентов • $attentionCount требуют внимания',
                           style: textTheme.bodyMedium,
                         ),
                       ],
@@ -210,7 +326,7 @@ class _CoachClientsPageState extends State<CoachClientsPage> {
                       const SizedBox(width: 10),
                       InkWell(
                         borderRadius: BorderRadius.circular(16),
-                        onTap: () {},
+                        onTap: _loadClients,
                         child: Container(
                           width: 44,
                           height: 44,
@@ -221,7 +337,7 @@ class _CoachClientsPageState extends State<CoachClientsPage> {
                           ),
                           alignment: Alignment.center,
                           child: Icon(
-                            Icons.tune_rounded,
+                            Icons.refresh_rounded,
                             size: 20,
                             color: colors.onSurface,
                           ),
@@ -236,68 +352,62 @@ class _CoachClientsPageState extends State<CoachClientsPage> {
                 controller: _searchController,
                 onChanged: (_) => setState(() {}),
                 decoration: const InputDecoration(
-                  hintText: 'Поиск по имени...',
+                  hintText: 'Поиск по имени, email, цели или активности...',
                   prefixIcon: Icon(Icons.search_rounded),
                 ),
               ),
               const SizedBox(height: 20),
-              const SingleChildScrollView(
-                scrollDirection: Axis.horizontal,
-                child: Row(
-                  children: <Widget>[
-                    _RiskStatCard(
-                      count: '2',
-                      title: 'Высокий риск',
-                      background: Color(0xFFFEE2E2),
-                      border: Color(0xFFFECACA),
-                      textColor: Color(0xFF991B1B),
-                    ),
-                    SizedBox(width: 12),
-                    _RiskStatCard(
-                      count: '4',
-                      title: 'Средний риск',
-                      background: Color(0xFFFEF3C7),
-                      border: Color(0xFFFDE68A),
-                      textColor: Color(0xFF92400E),
-                    ),
-                    SizedBox(width: 12),
-                    _RiskStatCard(
-                      count: '6',
-                      title: 'В норме',
-                      background: Color(0xFFDCFCE7),
-                      border: Color(0xFFBBF7D0),
-                      textColor: Color(0xFF166534),
-                    ),
-                  ],
-                ),
+              Wrap(
+                spacing: 12,
+                runSpacing: 12,
+                children: <Widget>[
+                  _CoachStatCard(
+                    value: _clients.length.toString(),
+                    label: 'Клиентов',
+                    background: const Color(0xFFE0F2FE),
+                    border: const Color(0xFFBAE6FD),
+                    textColor: const Color(0xFF075985),
+                  ),
+                  _CoachStatCard(
+                    value: activeCount.toString(),
+                    label: 'Активные',
+                    background: const Color(0xFFDCFCE7),
+                    border: const Color(0xFFBBF7D0),
+                    textColor: const Color(0xFF166534),
+                  ),
+                  _CoachStatCard(
+                    value: stagnatingCount.toString(),
+                    label: 'Снижение',
+                    background: const Color(0xFFFEF3C7),
+                    border: const Color(0xFFFDE68A),
+                    textColor: const Color(0xFF92400E),
+                  ),
+                ],
               ),
               const SizedBox(height: 20),
               Text(
                 'Список клиентов',
                 style: textTheme.titleMedium?.copyWith(color: colors.onSurface),
               ),
-              const SizedBox(height: 10),
-              ...filtered.map(
-                (item) => Padding(
-                  padding: const EdgeInsets.only(bottom: 10),
-                  child: _ClientRiskCard(
-                    item: item,
-                    onOpenClient: () => widget.onOpenClient(item.name),
-                    onOpenChat: () => widget.onOpenChat(item.name),
-                  ),
-                ),
-              ),
-              if (filtered.isEmpty)
-                Container(
-                  padding: const EdgeInsets.all(16),
-                  decoration: BoxDecoration(
-                    color: colors.surface,
-                    borderRadius: BorderRadius.circular(16),
-                    border: Border.all(color: theme.dividerColor),
-                  ),
-                  child: Text(
-                    'Ничего не найдено',
-                    style: textTheme.bodyMedium?.copyWith(color: colors.onSurface),
+              const SizedBox(height: 12),
+              if (_isLoading)
+                const _LoadingStateCard()
+              else if (_errorMessage != null)
+                _ErrorStateCard(
+                  message: _errorMessage!,
+                  onRetry: _loadClients,
+                )
+              else if (filteredClients.isEmpty)
+                const _EmptyStateCard()
+              else
+                ...filteredClients.map(
+                  (CoachClientCardData client) => Padding(
+                    padding: const EdgeInsets.only(bottom: 12),
+                    child: _CoachClientCard(
+                      item: client,
+                      onOpenClient: () => _openClient(client),
+                      onOpenChat: () => _openChat(client),
+                    ),
                   ),
                 ),
               const SizedBox(height: 80),
@@ -309,17 +419,17 @@ class _CoachClientsPageState extends State<CoachClientsPage> {
   }
 }
 
-class _RiskStatCard extends StatelessWidget {
-  const _RiskStatCard({
-    required this.count,
-    required this.title,
+class _CoachStatCard extends StatelessWidget {
+  const _CoachStatCard({
+    required this.value,
+    required this.label,
     required this.background,
     required this.border,
     required this.textColor,
   });
 
-  final String count;
-  final String title;
+  final String value;
+  final String label;
   final Color background;
   final Color border;
   final Color textColor;
@@ -327,25 +437,29 @@ class _RiskStatCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final TextTheme textTheme = Theme.of(context).textTheme;
+
     return Container(
-      constraints: const BoxConstraints(minWidth: 140),
+      constraints: const BoxConstraints(minWidth: 130),
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
         color: background,
-        borderRadius: BorderRadius.circular(20),
+        borderRadius: BorderRadius.circular(18),
         border: Border.all(color: border),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: <Widget>[
           Text(
-            count,
-            style: textTheme.titleLarge?.copyWith(color: textColor),
+            value,
+            style: textTheme.headlineSmall?.copyWith(
+              color: textColor,
+              fontWeight: FontWeight.w800,
+            ),
           ),
           const SizedBox(height: 4),
           Text(
-            title,
-            style: textTheme.labelSmall?.copyWith(color: textColor),
+            label,
+            style: textTheme.labelMedium?.copyWith(color: textColor),
           ),
         ],
       ),
@@ -353,14 +467,14 @@ class _RiskStatCard extends StatelessWidget {
   }
 }
 
-class _ClientRiskCard extends StatelessWidget {
-  const _ClientRiskCard({
+class _CoachClientCard extends StatelessWidget {
+  const _CoachClientCard({
     required this.item,
     required this.onOpenClient,
     required this.onOpenChat,
   });
 
-  final _ClientRiskItem item;
+  final CoachClientCardData item;
   final VoidCallback onOpenClient;
   final VoidCallback onOpenChat;
 
@@ -369,142 +483,237 @@ class _ClientRiskCard extends StatelessWidget {
     final ThemeData theme = Theme.of(context);
     final ColorScheme colors = theme.colorScheme;
     final TextTheme textTheme = theme.textTheme;
-    final _RiskColors riskColors = _RiskColors.fromLevel(item.riskLevel);
+    final _StatusColors statusColors = _statusColorsFor(item.displayProgressStatus);
 
-    return InkWell(
-      onTap: onOpenClient,
-      borderRadius: BorderRadius.circular(20),
-      child: Container(
-        padding: const EdgeInsets.all(14),
-        decoration: BoxDecoration(
-          color: colors.surface,
-          borderRadius: BorderRadius.circular(20),
-          border: Border.all(color: theme.dividerColor),
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: <Widget>[
-            Row(
-              children: <Widget>[
-                _ClientAvatar(name: item.name, descriptor: item.avatarDesc),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: <Widget>[
-                      Text(
-                        item.name,
-                        style: textTheme.labelLarge?.copyWith(
-                          color: colors.onSurface,
+    return Material(
+      color: colors.surface,
+      borderRadius: BorderRadius.circular(22),
+      child: InkWell(
+        onTap: onOpenClient,
+        borderRadius: BorderRadius.circular(22),
+        child: Container(
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(22),
+            border: Border.all(color: theme.dividerColor),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: <Widget>[
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: <Widget>[
+                  _ClientAvatar(
+                    name: item.displayName,
+                    avatarUrl: item.avatarUrl,
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: <Widget>[
+                        Text(
+                          item.displayName,
+                          style: textTheme.titleMedium?.copyWith(
+                            color: colors.onSurface,
+                            fontWeight: FontWeight.w700,
+                          ),
                         ),
-                      ),
-                      const SizedBox(height: 2),
-                      Text(item.lastActive, style: textTheme.bodySmall),
-                    ],
+                        const SizedBox(height: 4),
+                        Text(
+                          item.email.isNotEmpty ? item.email : 'Email не указан',
+                          style: textTheme.bodySmall,
+                        ),
+                        const SizedBox(height: 10),
+                        Wrap(
+                          spacing: 8,
+                          runSpacing: 8,
+                          children: <Widget>[
+                            _MetaChip(label: 'Возраст', value: item.displayAgeLabel),
+                            _MetaChip(label: 'Цель', value: item.displayGoal),
+                            _MetaChip(
+                              label: 'Активность',
+                              value: item.displayActivityLevel,
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
                   ),
-                ),
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                  decoration: BoxDecoration(
-                    color: riskColors.background,
-                    borderRadius: BorderRadius.circular(999),
-                    border: Border.all(color: riskColors.border),
+                  const SizedBox(width: 10),
+                  _StatusBadge(
+                    label: item.displayProgressStatusLabel,
+                    statusColors: statusColors,
                   ),
-                  child: Text(
-                    item.riskLabel,
-                    style: textTheme.labelSmall?.copyWith(color: riskColors.text),
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 12),
-            Row(
-              children: <Widget>[
-                Expanded(
-                  child: _TaskStatPill(
-                    icon: Icons.photo_camera_outlined,
-                    title: 'Еда',
-                    value: item.foodStat,
-                    done: item.foodDone,
-                  ),
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: _TaskStatPill(
-                    icon: Icons.directions_walk_rounded,
-                    title: 'Активность',
-                    value: item.activityStat,
-                    done: item.activityDone,
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 10),
-            Row(
-              children: <Widget>[
-                Expanded(
-                  child: OutlinedButton(
-                    onPressed: onOpenClient,
-                    child: const Text('Открыть'),
-                  ),
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: OutlinedButton.icon(
-                    onPressed: onOpenChat,
-                    icon: const Icon(Icons.chat_bubble_outline_rounded, size: 16),
-                    label: const Text('Чат'),
-                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              Text(
+                'Последняя активность: ${item.displayLastActivityDate}',
+                style: textTheme.bodySmall,
+              ),
+              const SizedBox(height: 4),
+              Text(
+                'Последняя сессия: ${item.displayLastSessionDate}',
+                style: textTheme.bodySmall,
+              ),
+              const SizedBox(height: 4),
+              Text(
+                item.onboardingLabel,
+                style: textTheme.bodySmall,
+              ),
+              if (item.notes.trim().isNotEmpty) ...<Widget>[
+                const SizedBox(height: 8),
+                Text(
+                  item.notes,
+                  style: textTheme.bodySmall,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
                 ),
               ],
-            ),
-          ],
+              const SizedBox(height: 14),
+              Row(
+                children: <Widget>[
+                  Expanded(
+                    child: OutlinedButton(
+                      onPressed: onOpenClient,
+                      child: const Text('Открыть'),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      onPressed: onOpenChat,
+                      icon: const Icon(Icons.chat_bubble_outline_rounded, size: 16),
+                      label: const Text('Чат'),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
         ),
       ),
     );
   }
 }
 
-class _TaskStatPill extends StatelessWidget {
-  const _TaskStatPill({
-    required this.icon,
-    required this.title,
-    required this.value,
-    required this.done,
-  });
+class _MetaChip extends StatelessWidget {
+  const _MetaChip({required this.label, required this.value});
 
-  final IconData icon;
-  final String title;
+  final String label;
   final String value;
-  final bool done;
 
   @override
   Widget build(BuildContext context) {
     final ThemeData theme = Theme.of(context);
     final ColorScheme colors = theme.colorScheme;
 
-    final Color tint = done ? const Color(0xFF166534) : const Color(0xFF991B1B);
-    final Color bg = done ? const Color(0xFFDCFCE7) : const Color(0xFFFEE2E2);
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: theme.scaffoldBackgroundColor,
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: theme.dividerColor),
+      ),
+      child: Text(
+        '$label: $value',
+        style: theme.textTheme.labelSmall?.copyWith(color: colors.onSurface),
+      ),
+    );
+  }
+}
+
+class _StatusBadge extends StatelessWidget {
+  const _StatusBadge({required this.label, required this.statusColors});
+
+  final String label;
+  final _StatusColors statusColors;
+
+  @override
+  Widget build(BuildContext context) {
+    final TextTheme textTheme = Theme.of(context).textTheme;
 
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
       decoration: BoxDecoration(
-        color: bg,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: bg.withValues(alpha: 0.85)),
+        color: statusColors.background,
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: statusColors.border),
       ),
-      child: Row(
+      child: Text(
+        label,
+        style: textTheme.labelSmall?.copyWith(color: statusColors.text),
+      ),
+    );
+  }
+}
+
+class _LoadingStateCard extends StatelessWidget {
+  const _LoadingStateCard();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      height: 180,
+      alignment: Alignment.center,
+      child: const CircularProgressIndicator(),
+    );
+  }
+}
+
+class _EmptyStateCard extends StatelessWidget {
+  const _EmptyStateCard();
+
+  @override
+  Widget build(BuildContext context) {
+    final ThemeData theme = Theme.of(context);
+    final ColorScheme colors = theme.colorScheme;
+
+    return Container(
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: colors.surface,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: theme.dividerColor),
+      ),
+      child: Text(
+        'Клиенты не найдены',
+        style: theme.textTheme.bodyMedium,
+      ),
+    );
+  }
+}
+
+class _ErrorStateCard extends StatelessWidget {
+  const _ErrorStateCard({required this.message, required this.onRetry});
+
+  final String message;
+  final VoidCallback onRetry;
+
+  @override
+  Widget build(BuildContext context) {
+    final ThemeData theme = Theme.of(context);
+    final ColorScheme colors = theme.colorScheme;
+
+    return Container(
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: colors.surface,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: theme.dividerColor),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: <Widget>[
-          Icon(icon, size: 16, color: tint),
-          const SizedBox(width: 6),
-          Expanded(
-            child: Text(
-              '$title: $value',
-              style: theme.textTheme.labelMedium?.copyWith(
-                color: done ? tint : colors.onSurface,
-              ),
-              overflow: TextOverflow.ellipsis,
-            ),
+          Text(
+            message,
+            style: theme.textTheme.bodyMedium,
+          ),
+          const SizedBox(height: 12),
+          ElevatedButton(
+            onPressed: onRetry,
+            child: const Text('Повторить'),
           ),
         ],
       ),
@@ -513,38 +722,75 @@ class _TaskStatPill extends StatelessWidget {
 }
 
 class _ClientAvatar extends StatelessWidget {
-  const _ClientAvatar({required this.name, required this.descriptor});
+  const _ClientAvatar({required this.name, required this.avatarUrl});
 
   final String name;
-  final String descriptor;
+  final String avatarUrl;
 
   @override
   Widget build(BuildContext context) {
-    final List<String> parts = name.split(' ').where((e) => e.isNotEmpty).toList();
+    final List<String> parts = name.split(' ').where((String part) => part.isNotEmpty).toList();
     final String initials = parts
         .take(2)
-        .map((part) => part.characters.first.toUpperCase())
+        .map((String part) => part.characters.first.toUpperCase())
         .join();
 
-    final int hash = descriptor.hashCode;
-    final Color bg = Color(0xFFE8E2D9 + (hash & 0x000F0F0F)).withValues(alpha: 1);
+    final Color background = const Color(0xFFE8E2D9).withValues(alpha: 1);
 
-    return CircleAvatar(
-      radius: 22,
-      backgroundColor: bg,
+    if (avatarUrl.trim().isNotEmpty) {
+      return Container(
+        width: 48,
+        height: 48,
+        decoration: BoxDecoration(
+          color: background,
+          shape: BoxShape.circle,
+        ),
+        child: ClipOval(
+          child: Image.network(
+            avatarUrl,
+            fit: BoxFit.cover,
+            errorBuilder: (_, __, ___) => _InitialsAvatar(
+              initials: initials,
+              background: background,
+            ),
+          ),
+        ),
+      );
+    }
+
+    return _InitialsAvatar(initials: initials, background: background);
+  }
+}
+
+class _InitialsAvatar extends StatelessWidget {
+  const _InitialsAvatar({required this.initials, required this.background});
+
+  final String initials;
+  final Color background;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: 48,
+      height: 48,
+      decoration: BoxDecoration(
+        color: background,
+        shape: BoxShape.circle,
+      ),
+      alignment: Alignment.center,
       child: Text(
         initials,
         style: Theme.of(context).textTheme.labelMedium?.copyWith(
-              color: Theme.of(context).colorScheme.onSurface,
-              fontWeight: FontWeight.w700,
-            ),
+          color: Theme.of(context).colorScheme.onSurface,
+          fontWeight: FontWeight.w700,
+        ),
       ),
     );
   }
 }
 
-class _RiskColors {
-  const _RiskColors({
+class _StatusColors {
+  const _StatusColors({
     required this.background,
     required this.border,
     required this.text,
@@ -553,52 +799,33 @@ class _RiskColors {
   final Color background;
   final Color border;
   final Color text;
+}
 
-  factory _RiskColors.fromLevel(_RiskLevel level) {
-    switch (level) {
-      case _RiskLevel.high:
-        return const _RiskColors(
-          background: Color(0xFFFEE2E2),
-          border: Color(0xFFFECACA),
-          text: Color(0xFF991B1B),
-        );
-      case _RiskLevel.medium:
-        return const _RiskColors(
-          background: Color(0xFFFEF3C7),
-          border: Color(0xFFFDE68A),
-          text: Color(0xFF92400E),
-        );
-      case _RiskLevel.low:
-        return const _RiskColors(
-          background: Color(0xFFDCFCE7),
-          border: Color(0xFFBBF7D0),
-          text: Color(0xFF166534),
-        );
-    }
+_StatusColors _statusColorsFor(String status) {
+  switch (status.toLowerCase()) {
+    case 'active':
+      return const _StatusColors(
+        background: Color(0xFFDCFCE7),
+        border: Color(0xFFBBF7D0),
+        text: Color(0xFF166534),
+      );
+    case 'stagnating':
+      return const _StatusColors(
+        background: Color(0xFFFEF3C7),
+        border: Color(0xFFFDE68A),
+        text: Color(0xFF92400E),
+      );
+    case 'no data':
+      return const _StatusColors(
+        background: Color(0xFFF3F4F6),
+        border: Color(0xFFE5E7EB),
+        text: Color(0xFF6B7280),
+      );
+    default:
+      return const _StatusColors(
+        background: Color(0xFFE0F2FE),
+        border: Color(0xFFBAE6FD),
+        text: Color(0xFF075985),
+      );
   }
 }
-
-class _ClientRiskItem {
-  const _ClientRiskItem({
-    required this.name,
-    required this.avatarDesc,
-    required this.lastActive,
-    required this.riskLevel,
-    required this.riskLabel,
-    required this.foodStat,
-    required this.foodDone,
-    required this.activityStat,
-    required this.activityDone,
-  });
-
-  final String name;
-  final String avatarDesc;
-  final String lastActive;
-  final _RiskLevel riskLevel;
-  final String riskLabel;
-  final String foodStat;
-  final bool foodDone;
-  final String activityStat;
-  final bool activityDone;
-}
-

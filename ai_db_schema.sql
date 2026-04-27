@@ -1,5 +1,5 @@
 -- PsyBalance MVP schema (public)
--- Dev stage: RLS/policies intentionally NOT enabled here.
+-- Coach/client flows require read access to users plus self-write for profiles.
 
 create extension if not exists pgcrypto;
 
@@ -42,16 +42,69 @@ alter table public.users
   add column if not exists birth_date date,
   add column if not exists height_cm int,
   add column if not exists weight_kg int,
+  add column if not exists last_activity_date timestamp with time zone,
+  add column if not exists last_session_date timestamp with time zone,
+  add column if not exists progress_status text,
+  add column if not exists notes text,
   add column if not exists notifications_enabled boolean default true,
   add column if not exists language text default 'ru';
 
+alter table public.users
+  alter column last_activity_date drop default,
+  alter column last_activity_date drop not null,
+  alter column last_session_date drop default,
+  alter column last_session_date drop not null,
+  alter column progress_status drop default,
+  alter column progress_status drop not null,
+  alter column notes drop default,
+  alter column notes drop not null;
+
 create index if not exists idx_users_role on public.users(role);
+
+alter table public.users
+  enable row level security;
+
+drop policy if exists "users_select_authenticated" on public.users;
+
+create policy "users_select_authenticated"
+on public.users
+for select
+to authenticated
+using (true);
+
+drop policy if exists "users_insert_own_row" on public.users;
+
+create policy "users_insert_own_row"
+on public.users
+for insert
+to authenticated
+with check (id = auth.uid());
+
+drop policy if exists "users_update_own_row" on public.users;
+
+create policy "users_update_own_row"
+on public.users
+for update
+to authenticated
+using (id = auth.uid())
+with check (id = auth.uid());
+
+alter table public.users
+  drop constraint if exists users_progress_status_check;
+
+alter table public.users
+  add constraint users_progress_status_check
+  check (progress_status in ('beginner', 'active', 'stagnating'));
 
 create table if not exists public.clients (
   id uuid primary key default gen_random_uuid(),
   user_id uuid references public.users(id) on delete cascade,
-  coach_id uuid references public.users(id) on delete set null
+  coach_id uuid references public.users(id) on delete set null,
+  created_at timestamp with time zone default now()
 );
+
+alter table public.clients
+  add column if not exists created_at timestamp with time zone default now();
 
 create table if not exists public.check_ins (
   id uuid primary key default gen_random_uuid(),
@@ -165,16 +218,45 @@ using (
 create table if not exists public.plans (
   id uuid primary key default gen_random_uuid(),
   user_id uuid references public.users(id) on delete cascade,
-  week_start date
+  week_start date,
+  created_at timestamp default now()
 );
+
+alter table public.plans
+  add column if not exists created_at timestamp default now();
 
 create table if not exists public.plan_items (
   id uuid primary key default gen_random_uuid(),
   plan_id uuid references public.plans(id) on delete cascade,
   title text,
-  status text,
+  description text,
+  status text default 'pending',
+  created_at timestamp default now(),
+  updated_at timestamp default now(),
   proof_image text
 );
+
+alter table public.plan_items
+  add column if not exists description text,
+  add column if not exists created_at timestamp default now(),
+  add column if not exists updated_at timestamp default now();
+
+alter table public.plan_items
+  alter column status set default 'pending';
+
+alter table public.plan_items
+  drop constraint if exists plan_items_status_check;
+
+alter table public.plan_items
+  add constraint plan_items_status_check
+  check (status in ('pending', 'in_progress', 'done'));
+
+update public.plan_items
+set status = 'pending'
+where status is null or trim(status) = '';
+
+alter table public.plan_items
+  alter column status set not null;
 
 create table if not exists public.messages (
   id uuid primary key default gen_random_uuid(),

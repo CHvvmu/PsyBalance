@@ -28,8 +28,13 @@ class _AddClientPageState extends State<AddClientPage> {
       return;
     }
 
-    final String email = _emailController.text.trim();
-    if (email.isEmpty) {
+    final String rawEmail = _emailController.text;
+    final String cleanEmail = rawEmail.trim().toLowerCase();
+
+    print('SEARCH EMAIL RAW: $rawEmail');
+    print('SEARCH EMAIL CLEAN: $cleanEmail');
+
+    if (cleanEmail.isEmpty) {
       setState(() {
         errorText = 'Введите email';
       });
@@ -44,7 +49,7 @@ class _AddClientPageState extends State<AddClientPage> {
     bool shouldClose = false;
 
     try {
-      print('ADD CLIENT START: $email');
+      print('ADD CLIENT START: $cleanEmail');
 
       final User? currentUser = _client.auth.currentUser;
       if (currentUser == null) {
@@ -59,10 +64,15 @@ class _AddClientPageState extends State<AddClientPage> {
       final Map<String, dynamic>? foundUser = await _client
           .from('users')
           .select()
-          .eq('email', email)
+          .ilike('email', cleanEmail)
           .maybeSingle();
 
+      print('SEARCH RESULT: ${foundUser == null ? 'null' : foundUser['id']}');
+
       if (foundUser == null) {
+        print(
+          'SEARCH QUERY ATTEMPT: table=users, select=*, filter=email ILIKE "$cleanEmail", rawEmail="$rawEmail"',
+        );
         if (mounted) {
           setState(() {
             errorText = 'Пользователь не найден';
