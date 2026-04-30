@@ -55,7 +55,7 @@ class _CoachPlanEditorPageState extends State<CoachPlanEditorPage> {
 
       setState(() {
         _isLoading = false;
-        _errorMessage = 'Не удалось открыть план клиента';
+        _errorMessage = 'План пока недоступен';
         _planId = null;
         _weekStartLabel = null;
         _items = <PlanItemData>[];
@@ -119,7 +119,7 @@ class _CoachPlanEditorPageState extends State<CoachPlanEditorPage> {
 
       setState(() {
         _isLoading = false;
-        _errorMessage = 'Не удалось загрузить план';
+        _errorMessage = 'План пока недоступен';
         _planId = null;
         _weekStartLabel = null;
         _items = <PlanItemData>[];
@@ -174,7 +174,7 @@ class _CoachPlanEditorPageState extends State<CoachPlanEditorPage> {
       debugPrint('COACH PLAN ITEM SAVE ERROR: clientId=$clientId planId is empty');
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('План ещё не загружен')),
+          const SnackBar(content: Text('План пока не загружен')),
         );
       }
       return;
@@ -236,9 +236,7 @@ class _CoachPlanEditorPageState extends State<CoachPlanEditorPage> {
 
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text(
-            item == null ? 'Задача добавлена' : 'Задача обновлена',
-          ),
+          content: Text(item == null ? 'Шаг добавлен' : 'Шаг обновлён'),
         ),
       );
     } catch (error) {
@@ -247,7 +245,7 @@ class _CoachPlanEditorPageState extends State<CoachPlanEditorPage> {
       );
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Не удалось сохранить задачу')),
+          const SnackBar(content: Text('Не удалось сохранить шаг')),
         );
       }
     } finally {
@@ -268,8 +266,8 @@ class _CoachPlanEditorPageState extends State<CoachPlanEditorPage> {
           context: context,
           builder: (BuildContext context) {
             return AlertDialog(
-              title: const Text('Удалить задачу?'),
-              content: Text('Задача "${item.displayTitle}" будет удалена из плана.'),
+              title: const Text('Удалить шаг?'),
+              content: Text('Шаг "${item.displayTitle}" будет удалён из плана.'),
               actions: <Widget>[
                 TextButton(
                   onPressed: () => Navigator.of(context).pop(false),
@@ -320,7 +318,7 @@ class _CoachPlanEditorPageState extends State<CoachPlanEditorPage> {
       }
 
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Задача удалена')),
+        const SnackBar(content: Text('Шаг удалён')),
       );
     } catch (error) {
       debugPrint(
@@ -328,7 +326,7 @@ class _CoachPlanEditorPageState extends State<CoachPlanEditorPage> {
       );
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Не удалось удалить задачу')),
+          const SnackBar(content: Text('Не удалось удалить шаг')),
         );
       }
     } finally {
@@ -555,7 +553,7 @@ class _CoachPlanEditorPageState extends State<CoachPlanEditorPage> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: <Widget>[
           Text(
-            _errorMessage ?? 'Не удалось загрузить план',
+            _errorMessage ?? 'План пока недоступен',
             style: theme.textTheme.titleMedium?.copyWith(
               color: colors.onSurface,
               fontWeight: FontWeight.w700,
@@ -563,7 +561,7 @@ class _CoachPlanEditorPageState extends State<CoachPlanEditorPage> {
           ),
           const SizedBox(height: 10),
           Text(
-            'Попробуйте обновить страницу.',
+            'Попробуйте еще раз через пару секунд.',
             style: theme.textTheme.bodyMedium,
           ),
           const SizedBox(height: 14),
@@ -589,7 +587,7 @@ class _CoachPlanEditorPageState extends State<CoachPlanEditorPage> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: <Widget>[
           Text(
-            'Пока нет задач в плане',
+            'Пока в плане нет шагов',
             style: theme.textTheme.titleMedium?.copyWith(
               color: colors.onSurface,
               fontWeight: FontWeight.w700,
@@ -597,14 +595,14 @@ class _CoachPlanEditorPageState extends State<CoachPlanEditorPage> {
           ),
           const SizedBox(height: 8),
           Text(
-            'Добавьте первую задачу, чтобы начать работу с планом клиента.',
+            'Добавьте первый небольшой шаг, чтобы мягко запустить ритм работы.',
             style: theme.textTheme.bodyMedium,
           ),
           const SizedBox(height: 14),
           ElevatedButton.icon(
             onPressed: _isSaving ? null : () => _openItemEditor(),
             icon: const Icon(Icons.add_rounded),
-            label: const Text('Добавить задачу'),
+            label: const Text('Добавить шаг'),
           ),
         ],
       ),
@@ -624,7 +622,7 @@ class _CoachPlanEditorPageState extends State<CoachPlanEditorPage> {
         backgroundColor: colors.primary,
         foregroundColor: colors.onPrimary,
         icon: const Icon(Icons.add_rounded),
-        label: const Text('Новая задача'),
+        label: const Text('Новый шаг'),
       ),
       body: SafeArea(
         child: Column(
@@ -705,13 +703,13 @@ class _CoachPlanEditorPageState extends State<CoachPlanEditorPage> {
                             ),
                             _InfoChip(
                               icon: Icons.list_alt_rounded,
-                              label: 'Задач',
+                              label: 'Шагов',
                               value: _items.length.toString(),
                             ),
                             const _InfoChip(
                               icon: Icons.sync_rounded,
                               label: 'Сохранение',
-                              value: 'Supabase',
+                              value: 'Автосохранение',
                             ),
                           ],
                         ),
@@ -723,7 +721,7 @@ class _CoachPlanEditorPageState extends State<CoachPlanEditorPage> {
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: <Widget>[
                         Text(
-                          'Задачи плана',
+                          'Шаги плана',
                           style: textTheme.titleMedium?.copyWith(
                             color: colors.onSurface,
                             fontWeight: FontWeight.w700,
@@ -732,7 +730,7 @@ class _CoachPlanEditorPageState extends State<CoachPlanEditorPage> {
                         TextButton.icon(
                           onPressed: _isLoading || _isSaving ? null : () => _openItemEditor(),
                           icon: const Icon(Icons.add_rounded, size: 16),
-                          label: const Text('Добавить'),
+                          label: const Text('Добавить шаг'),
                         ),
                       ],
                     ),
@@ -844,9 +842,9 @@ class _CoachPlanItemEditorDialog extends StatefulWidget {
 
 class _CoachPlanItemEditorDialogState extends State<_CoachPlanItemEditorDialog> {
   static const List<DropdownMenuItem<String>> _statusItems = <DropdownMenuItem<String>>[
-    DropdownMenuItem<String>(value: 'pending', child: Text('Ожидает')),
-    DropdownMenuItem<String>(value: 'in_progress', child: Text('В процессе')),
-    DropdownMenuItem<String>(value: 'done', child: Text('Сделано')),
+    DropdownMenuItem<String>(value: 'pending', child: Text('Намечен')),
+    DropdownMenuItem<String>(value: 'in_progress', child: Text('В работе')),
+    DropdownMenuItem<String>(value: 'done', child: Text('Шаг выполнен')),
   ];
 
   late final TextEditingController _titleController;
@@ -874,7 +872,7 @@ class _CoachPlanItemEditorDialogState extends State<_CoachPlanItemEditorDialog> 
 
     if (title.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Введите название задачи')),
+        const SnackBar(content: Text('Введите название шага')),
       );
       return;
     }
@@ -891,9 +889,9 @@ class _CoachPlanItemEditorDialogState extends State<_CoachPlanItemEditorDialog> 
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
-      title: Text(widget.item == null ? 'Новая задача' : 'Изменить задачу'),
-      content: SizedBox(
-        width: 420,
+      title: Text(widget.item == null ? 'Новый шаг' : 'Изменить шаг'),
+      content: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 420),
         child: SingleChildScrollView(
           child: Column(
             mainAxisSize: MainAxisSize.min,
@@ -902,7 +900,7 @@ class _CoachPlanItemEditorDialogState extends State<_CoachPlanItemEditorDialog> 
                 controller: _titleController,
                 textInputAction: TextInputAction.next,
                 decoration: const InputDecoration(
-                  labelText: 'Название',
+                  labelText: 'Название шага',
                 ),
               ),
               const SizedBox(height: 12),

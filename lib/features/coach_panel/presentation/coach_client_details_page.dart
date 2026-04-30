@@ -135,11 +135,11 @@ String _formatPercent(double value) {
 }
 
 String _displayCountOrPlaceholder(int value, bool hasData) {
-  return hasData ? value.toString() : 'Недостаточно данных';
+  return hasData ? value.toString() : _behaviorEmptyLabel;
 }
 
 String _displayPercentOrPlaceholder(double value, bool hasData) {
-  return hasData ? _formatPercent(value) : 'Недостаточно данных';
+  return hasData ? _formatPercent(value) : _behaviorEmptyLabel;
 }
 
 bool _isMissingColumnError(PostgrestException error, Iterable<String> columnNames) {
@@ -178,26 +178,17 @@ String _clientRowSelect({required bool includeAnalytics}) {
 }
 
 String _statusLabel(String value) {
-  switch (value.trim().toLowerCase()) {
-    case 'active':
-      return 'Активен';
-    case 'stagnating':
-      return 'Снижение';
-    case 'beginner':
-      return 'Адаптация';
-    default:
-      return 'Недостаточно данных';
-  }
+  return behaviorStatusLabel(value);
 }
 
 String _engagementLabelFromRaw(Object? value) {
   if (value == null) {
-    return 'Недостаточно данных';
+    return _behaviorEmptyLabel;
   }
 
   final String text = value.toString().trim();
   if (text.isEmpty) {
-    return 'Недостаточно данных';
+    return _behaviorEmptyLabel;
   }
 
   switch (text.toLowerCase()) {
@@ -215,31 +206,20 @@ String _engagementLabelFromRaw(Object? value) {
       return 'Высокая';
   }
 
-  final int? numeric = int.tryParse(text);
+  final num? numeric = num.tryParse(text);
   if (numeric != null) {
-    if (numeric <= 1) {
-      return 'Низкая';
+    final int score = numeric.round();
+    if (score >= 0 && score <= 100) {
+      return '$score / 100';
     }
-    if (numeric == 2) {
-      return 'Средняя';
-    }
-    return 'Высокая';
   }
 
-  return 'Недостаточно данных';
+  return _behaviorEmptyLabel;
 }
 
 Color _statusColor(ColorScheme colors, String value) {
-  switch (value.trim().toLowerCase()) {
-    case 'active':
-      return colors.primary;
-    case 'stagnating':
-      return const Color(0xFFE08A00);
-    case 'beginner':
-      return colors.secondary;
-    default:
-      return colors.onSurfaceVariant;
-  }
+  final BehaviorStatusPalette palette = behaviorStatusPaletteFor(value);
+  return palette.foreground;
 }
 
 String _moodLabel(int? value) {
@@ -336,12 +316,24 @@ int _calculateProgressScore({
   }
 
   switch (status.trim().toLowerCase()) {
+    case 'engaged':
     case 'active':
       score += 10;
       break;
+    case 'stable':
+      score += 12;
+      break;
+    case 'inconsistent':
     case 'stagnating':
       score += 4;
       break;
+    case 'struggling':
+      score += 2;
+      break;
+    case 'inactive':
+      score += 0;
+      break;
+    case 'onboarding':
     case 'beginner':
       score += 6;
       break;
@@ -355,7 +347,7 @@ String _consistencyLevelLabel({
   required double checkInConsistency,
 }) {
   if (streak <= 0 && checkInConsistency <= 0) {
-    return 'Недостаточно данных';
+    return _behaviorEmptyLabel;
   }
 
   if (streak >= 5 || checkInConsistency >= 0.7) {
@@ -372,7 +364,7 @@ String _engagementLevelLabel({
   required int daysSinceLastActivity,
 }) {
   if (recentActiveDays <= 0 && daysSinceLastActivity >= 999) {
-    return 'Активность появится после первых действий';
+    return _behaviorEmptyLabel;
   }
 
   if (recentActiveDays >= 4 || daysSinceLastActivity <= 2) {
@@ -394,7 +386,7 @@ String _behaviorHeadline({
   required bool hasActiveSignals,
 }) {
   if (!hasActiveSignals) {
-    return 'Пока мало свежих данных';
+    return _behaviorStarterHeadline;
   }
 
   if (daysSinceLastActivity > 10 && recentActiveDays > 0) {
@@ -424,7 +416,7 @@ String _behaviorDescription({
   required int tasksTotal,
 }) {
   switch (headline) {
-    case 'Пока мало свежих данных':
+    case _behaviorStarterHeadline:
       return 'Как только появятся чек-ины, задачи и чат-активность, здесь будет спокойный обзор.';
     case 'Возвращается после паузы':
       return 'Сейчас лучше работать мягко: короткие задачи, простые чек-ины и без лишнего давления.';
@@ -442,6 +434,9 @@ String _behaviorDescription({
 String _checkedCountLabel(int value, int total) {
   return '$value / $total';
 }
+
+const String _behaviorEmptyLabel = 'Появится после первых шагов';
+const String _behaviorStarterHeadline = 'Начните с небольшого действия сегодня';
 
 class _CheckInCardData {
   const _CheckInCardData({
@@ -487,6 +482,7 @@ class _ClientDetailsViewData {
     required this.ageValue,
     required this.goalValue,
     required this.activityLevelValue,
+    required this.progressStatusRaw,
     required this.progressStatusLabel,
     required this.progressScore,
     required this.consistencyStreak,
@@ -683,7 +679,7 @@ class _ClientDetailsViewData {
 
     final bool hasAnySignals = rawProgressScore != null ||
         rawConsistencyStreak != null ||
-        rawEngagementLevel != 'Недостаточно данных' ||
+        rawEngagementLevel != _behaviorEmptyLabel ||
         progressStatusRaw.isNotEmpty ||
         hasTaskActivity ||
         hasCheckInActivity ||
@@ -717,7 +713,7 @@ class _ClientDetailsViewData {
       recentActiveDays: recentActiveDays,
       daysSinceLastActivity: daysSinceLastActivity,
     );
-    final String engagementLabel = rawEngagementLevel == 'Недостаточно данных'
+    final String engagementLabel = rawEngagementLevel == _behaviorEmptyLabel
         ? engagementLevelLabel
         : rawEngagementLevel;
 
@@ -731,7 +727,7 @@ class _ClientDetailsViewData {
     final int finalProgressScore = rawProgressScore ?? progressScore;
 
     final String lastActivityValue = latestTimelineDate == null
-        ? 'Активность появится после первых действий'
+        ? _behaviorEmptyLabel
         : _relativeDayLabel(latestTimelineDate);
 
     return _ClientDetailsViewData(
@@ -740,6 +736,7 @@ class _ClientDetailsViewData {
       ageValue: ageValue,
       goalValue: goalValue,
       activityLevelValue: activityLevelValue,
+      progressStatusRaw: progressStatusRaw,
       progressStatusLabel: progressStatusLabel,
       progressScore: finalProgressScore,
       consistencyStreak: consistencyStreak,
@@ -770,6 +767,7 @@ class _ClientDetailsViewData {
   final String ageValue;
   final String goalValue;
   final String activityLevelValue;
+  final String progressStatusRaw;
   final String progressStatusLabel;
   final int progressScore;
   final int consistencyStreak;
@@ -800,6 +798,7 @@ class _ClientDetailsViewData {
       ageValue: ageValue,
       goalValue: goalValue,
       activityLevelValue: activityLevelValue,
+      progressStatusRaw: progressStatusRaw,
       progressStatusLabel: progressStatusLabel,
       progressScore: progressScore,
       consistencyStreak: consistencyStreak,
@@ -852,7 +851,7 @@ String _messagePreview(Map<String, dynamic> row) {
     return 'Фото в чате';
   }
 
-  return 'Без текста';
+  return 'Сообщение без текста';
 }
 
 class CoachClientDetailsPage extends StatefulWidget {
@@ -1359,8 +1358,8 @@ class _CoachClientDetailsPageState extends State<CoachClientDetailsPage> {
                     _MiniChip(
                       icon: Icons.verified_rounded,
                       label: data.progressStatusLabel,
-                      backgroundColor: _statusColor(colors, data.progressStatusLabel),
-                      textColor: colors.onSurface,
+                      backgroundColor: behaviorStatusPaletteFor(data.progressStatusRaw).background,
+                      textColor: behaviorStatusPaletteFor(data.progressStatusRaw).foreground,
                     ),
                     _MiniChip(
                       icon: Icons.auto_awesome_rounded,
@@ -1504,8 +1503,8 @@ class _CoachClientDetailsPageState extends State<CoachClientDetailsPage> {
     final String rateValue = _displayPercentOrPlaceholder(completionRate, hasTaskActivity);
 
     return _SectionCard(
-      title: 'Выполнение задач',
-      subtitle: hasTaskActivity ? data.weekValue : 'Активность появится после первых действий',
+      title: 'Шаги недели',
+      subtitle: hasTaskActivity ? data.weekValue : _behaviorStarterHeadline,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: <Widget>[
@@ -1527,7 +1526,7 @@ class _CoachClientDetailsPageState extends State<CoachClientDetailsPage> {
                 border: Border.all(color: theme.dividerColor.withValues(alpha: 0.7)),
               ),
               child: Text(
-                'Активность появится после первых действий.',
+                'Начните с небольшого действия сегодня.',
                 style: theme.textTheme.bodyMedium?.copyWith(color: colors.onSurfaceVariant),
               ),
             ),
@@ -1540,28 +1539,28 @@ class _CoachClientDetailsPageState extends State<CoachClientDetailsPage> {
               _StatCard(
                 title: 'Завершено',
                 value: completedValue,
-                subtitle: hasTaskActivity ? 'за текущий план' : 'Недостаточно данных',
+                subtitle: hasTaskActivity ? 'за текущую неделю' : _behaviorEmptyLabel,
                 icon: Icons.task_alt_rounded,
                 accentColor: colors.primary,
               ),
               _StatCard(
-                title: 'Пропущено',
+                title: 'Не завершено',
                 value: skippedValue,
-                subtitle: hasTaskActivity ? 'за текущий план' : 'Недостаточно данных',
+                subtitle: hasTaskActivity ? 'за текущую неделю' : _behaviorEmptyLabel,
                 icon: Icons.do_not_disturb_on_rounded,
                 accentColor: const Color(0xFFEA580C),
               ),
               _StatCard(
-                title: 'Completion rate',
+                title: 'Ритм выполнения',
                 value: rateValue,
-                subtitle: hasTaskActivity ? tasksValue : 'Недостаточно данных',
+                subtitle: hasTaskActivity ? tasksValue : _behaviorEmptyLabel,
                 icon: Icons.pie_chart_outline_rounded,
                 accentColor: colors.primary,
               ),
               _StatCard(
-                title: 'Всего задач',
+                title: 'Всего шагов',
                 value: totalValue,
-                subtitle: hasTaskActivity ? 'в текущем плане' : 'Недостаточно данных',
+                subtitle: hasTaskActivity ? 'за текущую неделю' : _behaviorEmptyLabel,
                 icon: Icons.view_list_rounded,
                 accentColor: colors.secondary,
               ),
@@ -1582,7 +1581,7 @@ class _CoachClientDetailsPageState extends State<CoachClientDetailsPage> {
       subtitle: 'Последние эмоциональные отметки без медицинских интерпретаций',
       child: checkIns.isEmpty
           ? Text(
-              'Недостаточно данных. Активность появится после первых действий.',
+              'Первые чек-ины появятся здесь, как только клиент начнет отмечать состояние.',
               style: theme.textTheme.bodyMedium?.copyWith(color: colors.onSurfaceVariant),
             )
           : Column(
@@ -1606,7 +1605,7 @@ class _CoachClientDetailsPageState extends State<CoachClientDetailsPage> {
       subtitle: 'Последние события: задачи, чек-ины, чат и паузы',
       child: entries.isEmpty
           ? Text(
-              'Недостаточно данных. Активность появится после первых действий.',
+              'Лента заполнится после первых шагов и откликов.',
               style: theme.textTheme.bodyMedium?.copyWith(color: colors.onSurfaceVariant),
             )
           : Column(
@@ -1805,13 +1804,14 @@ class _CoachClientDetailsPageState extends State<CoachClientDetailsPage> {
       ageValue: 'Возраст не указан',
       goalValue: 'Без цели',
       activityLevelValue: 'Уровень не указан',
-      progressStatusLabel: 'Недостаточно данных',
+      progressStatusRaw: '',
+      progressStatusLabel: _behaviorEmptyLabel,
       progressScore: 0,
       consistencyStreak: 0,
-      behaviorHeadline: 'Пока мало свежих данных',
-      behaviorDescription: 'Активность появится после первых действий.',
-      consistencyLevelLabel: 'Недостаточно данных',
-      engagementLevelLabel: 'Активность появится после первых действий',
+      behaviorHeadline: _behaviorStarterHeadline,
+      behaviorDescription: 'Обзор заполнится после первых шагов.',
+      consistencyLevelLabel: _behaviorEmptyLabel,
+      engagementLevelLabel: _behaviorEmptyLabel,
       tasksCompletedThisWeek: 0,
       tasksSkippedThisWeek: 0,
       tasksTotalThisWeek: 0,
@@ -1819,7 +1819,7 @@ class _CoachClientDetailsPageState extends State<CoachClientDetailsPage> {
       checkInDaysLast7: 0,
       checkInConsistency: 0,
       missedDays: 7,
-      lastActivityValue: 'Активность появится после первых действий',
+      lastActivityValue: _behaviorEmptyLabel,
       weekValue: 'Текущая неделя',
       recentCheckIns: <_CheckInCardData>[],
       timelineEntries: <_TimelineEntryData>[],

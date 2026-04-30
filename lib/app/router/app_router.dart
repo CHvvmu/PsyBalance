@@ -384,6 +384,7 @@ class AppRouter {
       builder: (_) => CoachChatPage(
         peerName: peerName,
         avatarUrl: peerAvatarUrl,
+        behaviorUserId: args?.clientId ?? '',
       ),
     );
   }
@@ -510,6 +511,7 @@ class _ResolvedClientChatPageState extends State<_ResolvedClientChatPage> {
     return CoachChatPage(
       peerName: _peerName,
       avatarUrl: _avatarUrl,
+      behaviorUserId: widget.clientId,
     );
   }
 }

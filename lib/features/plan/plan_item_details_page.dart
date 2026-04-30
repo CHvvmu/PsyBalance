@@ -32,7 +32,7 @@ class PlanItemData {
   String get displayTitle => title.isEmpty ? 'Без названия' : title;
 
   String get displayDescription =>
-      description.isEmpty ? 'Описание не указано' : description;
+      description.isEmpty ? 'Краткое описание появится позже' : description;
 
   String get normalizedStatus {
     switch (status) {
@@ -47,11 +47,11 @@ class PlanItemData {
   String get statusLabel {
     switch (normalizedStatus) {
       case 'in_progress':
-        return 'В процессе';
+        return 'В работе';
       case 'done':
-        return 'Сделано';
+        return 'Шаг выполнен';
       default:
-        return 'Ожидает';
+        return 'Намечен';
     }
   }
 }
@@ -142,7 +142,7 @@ class _PlanItemDetailsPageState extends State<PlanItemDetailsPage> {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Детали задачи'),
+        title: const Text('Детали шага'),
       ),
       body: SafeArea(
         child: SingleChildScrollView(
@@ -208,12 +208,12 @@ class _PlanItemDetailsPageState extends State<PlanItemDetailsPage> {
                         height: 18,
                         child: CircularProgressIndicator(strokeWidth: 2),
                       )
-                    : const Text('В процессе'),
+                    : const Text('В работу'),
               ),
               const SizedBox(height: 12),
               OutlinedButton(
                 onPressed: _isUpdating ? null : () => _updateStatus('done'),
-                child: const Text('Сделано'),
+                child: const Text('Шаг выполнен'),
               ),
             ],
           ),

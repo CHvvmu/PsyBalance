@@ -3,6 +3,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../../core/navigation/app_route_observer.dart';
 import '../../core/widgets/identity_avatar.dart';
+import '../coach_panel/presentation/coach_route_args.dart';
 import '../plan/plan_item_details_page.dart';
 
 class ClientDashboardPage extends StatelessWidget {
@@ -57,6 +58,86 @@ class _MoodOption {
   final String label;
 }
 
+class _DashboardBehaviorStatusBadge extends StatefulWidget {
+  const _DashboardBehaviorStatusBadge();
+
+  @override
+  State<_DashboardBehaviorStatusBadge> createState() => _DashboardBehaviorStatusBadgeState();
+}
+
+class _DashboardBehaviorStatusBadgeState extends State<_DashboardBehaviorStatusBadge> {
+  final SupabaseClient _client = Supabase.instance.client;
+
+  String _status = '';
+
+  @override
+  void initState() {
+    super.initState();
+    _loadStatus();
+  }
+
+  Future<void> _loadStatus() async {
+    final User? currentUser = _client.auth.currentUser;
+    if (currentUser == null) {
+      return;
+    }
+
+    try {
+      final Map<String, dynamic>? row = await _client
+          .from('users')
+          .select('progress_status')
+          .eq('id', currentUser.id)
+          .maybeSingle();
+
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _status = row?['progress_status']?.toString() ?? '';
+      });
+    } catch (error) {
+      debugPrint('DASHBOARD STATUS LOAD ERROR: $error');
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final ThemeData theme = Theme.of(context);
+    final BehaviorStatusPalette palette = behaviorStatusPaletteFor(_status);
+    final String label = behaviorStatusLabel(_status);
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      decoration: BoxDecoration(
+        color: palette.background,
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: palette.border),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: <Widget>[
+          Icon(
+            Icons.verified_rounded,
+            size: 14,
+            color: palette.foreground,
+          ),
+          const SizedBox(width: 6),
+          Text(
+            label,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: theme.textTheme.labelSmall?.copyWith(
+              color: palette.foreground,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class _BehavioralDashboardScreen extends StatelessWidget {
   const _BehavioralDashboardScreen({
     required this.onOpenFood,
@@ -109,6 +190,8 @@ class _BehavioralDashboardScreen extends StatelessWidget {
                           color: colors.onSurfaceVariant,
                         ),
                       ),
+                      const SizedBox(height: 8),
+                      const _DashboardBehaviorStatusBadge(),
                     ],
                   ),
                   _DashboardProfileAvatar(
@@ -394,7 +477,7 @@ class _DailyCheckInSectionState extends State<_DailyCheckInSection> {
 
       setState(() {
         _isLoading = false;
-        _errorMessage = 'Не удалось загрузить check-in';
+        _errorMessage = 'Отметка за сегодня пока недоступна';
         _checkInId = null;
         _createdAt = null;
         _selectedMood = null;
@@ -448,7 +531,7 @@ class _DailyCheckInSectionState extends State<_DailyCheckInSection> {
 
       setState(() {
         _isLoading = false;
-        _errorMessage = 'Не удалось загрузить check-in';
+        _errorMessage = 'Отметка за сегодня пока недоступна';
         _checkInId = null;
         _createdAt = null;
         _selectedMood = null;
@@ -514,11 +597,11 @@ class _DailyCheckInSectionState extends State<_DailyCheckInSection> {
 
       setState(() {
         _isSaving = false;
-        _errorMessage = 'Не удалось сохранить check-in';
+        _errorMessage = 'Не получилось сохранить отметку';
       });
 
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Не удалось сохранить check-in')),
+        const SnackBar(content: Text('Не получилось сохранить отметку')),
       );
     }
   }
@@ -541,7 +624,7 @@ class _DailyCheckInSectionState extends State<_DailyCheckInSection> {
           const SizedBox(width: 8),
           Expanded(
             child: Text(
-              _errorMessage ?? 'Не удалось загрузить check-in',
+              _errorMessage ?? 'Отметка за сегодня пока недоступна',
               style: theme.textTheme.bodySmall?.copyWith(
                 color: colors.onSurface,
               ),
@@ -843,7 +926,7 @@ class _DailyPlanSectionState extends State<_DailyPlanSection> {
 
       setState(() {
         _isLoading = false;
-        _errorMessage = 'Не удалось загрузить план';
+        _errorMessage = 'План появится после первых шагов';
         _planId = null;
         _weekStartLabel = null;
         _items = <PlanItemData>[];
@@ -938,7 +1021,7 @@ class _DailyPlanSectionState extends State<_DailyPlanSection> {
 
       setState(() {
         _isLoading = false;
-        _errorMessage = 'Не удалось загрузить план';
+        _errorMessage = 'План пока недоступен';
         _items = <PlanItemData>[];
         _planId = null;
         _weekStartLabel = null;
@@ -1050,8 +1133,8 @@ class _DailyPlanSectionState extends State<_DailyPlanSection> {
 
   Widget _buildEmptyState(ThemeData theme, ColorScheme colors) {
     final String message = _planId == null
-        ? 'План пока не назначен'
-        : 'В этом плане пока нет задач';
+        ? 'План появится после первых шагов'
+        : 'Пока здесь тихо. Добавьте небольшой шаг, чтобы начать ритм.';
 
     return Container(
       width: double.infinity,
@@ -1115,7 +1198,7 @@ class _DailyPlanSectionState extends State<_DailyPlanSection> {
           ),
           const SizedBox(height: 12),
           Text(
-            _errorMessage ?? 'Не удалось загрузить план',
+            _errorMessage ?? 'План пока недоступен',
             style: theme.textTheme.bodyLarge?.copyWith(
               color: colors.onSurface,
               fontWeight: FontWeight.w600,
@@ -1261,7 +1344,7 @@ class _CoachSupportSectionState extends State<_CoachSupportSection> {
 
       setState(() {
         _isLoading = false;
-        _errorMessage = 'Не удалось загрузить тренера';
+        _errorMessage = 'Связь с тренером появится после подключения';
         _coach = null;
       });
       return;
@@ -1349,7 +1432,7 @@ class _CoachSupportSectionState extends State<_CoachSupportSection> {
 
       setState(() {
         _isLoading = false;
-        _errorMessage = 'Не удалось загрузить тренера';
+        _errorMessage = 'Не получилось показать связь с тренером';
         _coach = null;
       });
     }

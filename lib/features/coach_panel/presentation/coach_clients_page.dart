@@ -188,8 +188,10 @@ class _CoachClientsPageState extends State<CoachClientsPage> {
     final DateTime? lastActivity = client.lastActivityDate;
     final bool staleActivity =
         lastActivity == null || DateTime.now().difference(lastActivity).inDays >= 7;
-    final bool stagnating = client.displayProgressStatus.toLowerCase() == 'stagnating';
-    return staleActivity || stagnating;
+    final String status = client.displayProgressStatus.toLowerCase();
+    final bool needsBehavioralAttention =
+        status == 'inconsistent' || status == 'struggling' || status == 'inactive';
+    return staleActivity || needsBehavioralAttention;
   }
 
   void _openClient(CoachClientCardData client) {
@@ -247,13 +249,17 @@ class _CoachClientsPageState extends State<CoachClientsPage> {
         .toList();
 
     final int attentionCount = _clients.where(_requiresAttention).length;
-    final int activeCount = _clients
-        .where((CoachClientCardData client) =>
-            client.displayProgressStatus.toLowerCase() == 'active')
+    final int engagedCount = _clients
+        .where((CoachClientCardData client) {
+          final String status = client.displayProgressStatus.toLowerCase();
+          return status == 'engaged' || status == 'stable';
+        })
         .length;
-    final int stagnatingCount = _clients
-        .where((CoachClientCardData client) =>
-            client.displayProgressStatus.toLowerCase() == 'stagnating')
+    final int attentionStatusCount = _clients
+        .where((CoachClientCardData client) {
+          final String status = client.displayProgressStatus.toLowerCase();
+          return status == 'inconsistent' || status == 'struggling' || status == 'inactive';
+        })
         .length;
 
     return Scaffold(
@@ -382,15 +388,15 @@ class _CoachClientsPageState extends State<CoachClientsPage> {
                     textColor: const Color(0xFF075985),
                   ),
                   _CoachStatCard(
-                    value: activeCount.toString(),
-                    label: 'Активные',
+                    value: engagedCount.toString(),
+                    label: 'Вовлечённые',
                     background: const Color(0xFFDCFCE7),
                     border: const Color(0xFFBBF7D0),
                     textColor: const Color(0xFF166534),
                   ),
                   _CoachStatCard(
-                    value: stagnatingCount.toString(),
-                    label: 'Неактивные',
+                    value: attentionStatusCount.toString(),
+                    label: 'Требуют внимания',
                     background: const Color(0xFFFEF3C7),
                     border: const Color(0xFFFDE68A),
                     textColor: const Color(0xFF92400E),
@@ -985,25 +991,7 @@ String _daysAgoLabel(int days) {
 }
 
 String _statusLabelFor(String status) {
-  switch (status.trim().toLowerCase()) {
-    case 'engaged':
-    case 'active':
-      return 'Вовлечён';
-    case 'stable':
-      return 'Стабильно';
-    case 'inconsistent':
-    case 'stagnating':
-      return 'Нестабильно';
-    case 'struggling':
-      return 'Нужна поддержка';
-    case 'inactive':
-      return 'Пауза';
-    case 'onboarding':
-    case 'beginner':
-      return 'Адаптация';
-    default:
-      return 'Адаптация';
-  }
+  return behaviorStatusLabel(status);
 }
 
 class _CoachInfoRow extends StatelessWidget {
@@ -1270,9 +1258,22 @@ class _EmptyStateCard extends StatelessWidget {
         borderRadius: BorderRadius.circular(20),
         border: Border.all(color: theme.dividerColor),
       ),
-      child: Text(
-        'Клиенты не найдены',
-        style: theme.textTheme.bodyMedium,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          Text(
+            'Пока здесь тихо',
+            style: theme.textTheme.titleMedium?.copyWith(
+              color: colors.onSurface,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            'Добавьте первого клиента или дождитесь первых шагов в системе.',
+            style: theme.textTheme.bodyMedium,
+          ),
+        ],
       ),
     );
   }
@@ -1327,51 +1328,10 @@ class _StatusColors {
 }
 
 _StatusColors _statusColorsFor(String status) {
-  switch (status.trim().toLowerCase()) {
-    case 'engaged':
-    case 'active':
-      return const _StatusColors(
-        background: Color(0xFFE4F7ED),
-        border: Color(0xFFB7E4CA),
-        text: Color(0xFF166534),
-      );
-    case 'stable':
-      return const _StatusColors(
-        background: Color(0xFFE8F1FF),
-        border: Color(0xFFC9D8FF),
-        text: Color(0xFF1D4ED8),
-      );
-    case 'inconsistent':
-    case 'stagnating':
-      return const _StatusColors(
-        background: Color(0xFFFFF3D9),
-        border: Color(0xFFF2D08A),
-        text: Color(0xFF9A6700),
-      );
-    case 'struggling':
-      return const _StatusColors(
-        background: Color(0xFFFFE8E8),
-        border: Color(0xFFF5B5B5),
-        text: Color(0xFFB42318),
-      );
-    case 'inactive':
-      return const _StatusColors(
-        background: Color(0xFFF3F4F6),
-        border: Color(0xFFE5E7EB),
-        text: Color(0xFF6B7280),
-      );
-    case 'onboarding':
-    case 'beginner':
-      return const _StatusColors(
-        background: Color(0xFFF3E8FF),
-        border: Color(0xFFE9D5FF),
-        text: Color(0xFF7C3AED),
-      );
-    default:
-      return const _StatusColors(
-        background: Color(0xFFF3E8FF),
-        border: Color(0xFFE9D5FF),
-        text: Color(0xFF7C3AED),
-      );
-  }
+  final BehaviorStatusPalette palette = behaviorStatusPaletteFor(status);
+  return _StatusColors(
+    background: palette.background,
+    border: palette.border,
+    text: palette.foreground,
+  );
 }

@@ -1,17 +1,21 @@
 import 'package:flutter/material.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../../core/widgets/identity_avatar.dart';
+import '../coach_panel/presentation/coach_route_args.dart';
 
 class CoachChatPage extends StatefulWidget {
   const CoachChatPage({
     super.key,
     required this.peerName,
     required this.avatarUrl,
+    required this.behaviorUserId,
     this.onlineLabel = 'В сети',
   });
 
   final String peerName;
   final String avatarUrl;
+  final String behaviorUserId;
   final String onlineLabel;
 
   @override
@@ -19,8 +23,14 @@ class CoachChatPage extends StatefulWidget {
 }
 
 class _CoachChatPageState extends State<CoachChatPage> {
+  final SupabaseClient _client = Supabase.instance.client;
   final TextEditingController _messageController = TextEditingController();
   final ScrollController _scrollController = ScrollController();
+
+  bool _isBehaviorLoading = true;
+  String _behaviorStatus = '';
+  int? _consistencyStreak;
+  DateTime? _lastCheckInAt;
 
   late final List<_ChatMessage> _messages = <_ChatMessage>[
     const _ChatMessage(
@@ -56,10 +66,223 @@ class _CoachChatPageState extends State<CoachChatPage> {
   ];
 
   @override
+  void initState() {
+    super.initState();
+    _loadBehaviorContext();
+  }
+
+  @override
   void dispose() {
     _messageController.dispose();
     _scrollController.dispose();
     super.dispose();
+  }
+
+  int? _toInt(Object? value) {
+    if (value == null) {
+      return null;
+    }
+
+    if (value is int) {
+      return value;
+    }
+
+    if (value is num) {
+      return value.round();
+    }
+
+    final String text = value.toString().trim();
+    if (text.isEmpty) {
+      return null;
+    }
+
+    return int.tryParse(text);
+  }
+
+  DateTime? _parseDateTime(Object? value) {
+    if (value == null) {
+      return null;
+    }
+
+    if (value is DateTime) {
+      return value;
+    }
+
+    final String text = value.toString().trim();
+    if (text.isEmpty) {
+      return null;
+    }
+
+    return DateTime.tryParse(text);
+  }
+
+  String _relativeDayLabel(DateTime value) {
+    final DateTime today = DateUtils.dateOnly(DateTime.now());
+    final DateTime day = DateUtils.dateOnly(value);
+    final int days = today.difference(day).inDays;
+
+    if (days <= 0) {
+      return 'сегодня';
+    }
+
+    if (days == 1) {
+      return 'вчера';
+    }
+
+    final int mod100 = days % 100;
+    if (mod100 >= 11 && mod100 <= 14) {
+      return '$days дней назад';
+    }
+
+    switch (days % 10) {
+      case 1:
+        return '$days день назад';
+      case 2:
+      case 3:
+      case 4:
+        return '$days дня назад';
+      default:
+        return '$days дней назад';
+    }
+  }
+
+  Future<void> _loadBehaviorContext() async {
+    final String behaviorUserId = widget.behaviorUserId.trim();
+    if (behaviorUserId.isEmpty) {
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _isBehaviorLoading = false;
+        _behaviorStatus = '';
+        _consistencyStreak = null;
+        _lastCheckInAt = null;
+      });
+      return;
+    }
+
+    try {
+      final Future<Map<String, dynamic>?> userFuture = _client
+          .from('users')
+          .select('progress_status, consistency_streak')
+          .eq('id', behaviorUserId)
+          .maybeSingle();
+
+      final Future<Map<String, dynamic>?> checkInFuture = _client
+          .from('check_ins')
+          .select('date, created_at')
+          .eq('user_id', behaviorUserId)
+          .order('created_at', ascending: false)
+          .limit(1)
+          .maybeSingle();
+
+      final List<Object?> results = await Future.wait(<Future<Object?>>[
+        userFuture,
+        checkInFuture,
+      ]);
+
+      final Map<String, dynamic>? userRow = results[0] as Map<String, dynamic>?;
+      final Map<String, dynamic>? checkInRow = results[1] as Map<String, dynamic>?;
+
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _isBehaviorLoading = false;
+        _behaviorStatus = userRow?['progress_status']?.toString() ?? '';
+        _consistencyStreak = _toInt(userRow?['consistency_streak']);
+        _lastCheckInAt = _parseDateTime(checkInRow?['created_at']) ?? _parseDateTime(checkInRow?['date']);
+      });
+    } catch (error) {
+      debugPrint('CHAT BEHAVIOR CONTEXT LOAD ERROR: behaviorUserId=$behaviorUserId error=$error');
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _isBehaviorLoading = false;
+        _behaviorStatus = '';
+        _consistencyStreak = null;
+        _lastCheckInAt = null;
+      });
+    }
+  }
+
+  Widget _buildBehaviorChip({
+    required IconData icon,
+    required String label,
+    required Color backgroundColor,
+    required Color borderColor,
+    required Color textColor,
+  }) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+      decoration: BoxDecoration(
+        color: backgroundColor,
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: borderColor),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: <Widget>[
+          Icon(icon, size: 14, color: textColor),
+          const SizedBox(width: 6),
+          Text(
+            label,
+            style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                  color: textColor,
+                  fontWeight: FontWeight.w700,
+                ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildBehaviorStrip(BuildContext context) {
+    final ThemeData theme = Theme.of(context);
+    final ColorScheme colors = theme.colorScheme;
+    final BehaviorStatusPalette statusPalette = behaviorStatusPaletteFor(_behaviorStatus);
+    final String statusLabel = behaviorStatusLabel(_behaviorStatus);
+    final String streakLabel = (_consistencyStreak ?? 0) > 0
+        ? '${_consistencyStreak ?? 0}-дневная серия'
+        : 'Серия появится после первых шагов';
+    final String checkInLabel = _lastCheckInAt == null
+        ? 'Чек-ин появится после первых шагов'
+        : 'Чек-ин: ${_relativeDayLabel(_lastCheckInAt!)}';
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(24, 14, 24, 0),
+      child: Wrap(
+        spacing: 8,
+        runSpacing: 8,
+        children: <Widget>[
+          _buildBehaviorChip(
+            icon: Icons.verified_rounded,
+            label: statusLabel,
+            backgroundColor: statusPalette.background,
+            borderColor: statusPalette.border,
+            textColor: statusPalette.foreground,
+          ),
+          _buildBehaviorChip(
+            icon: Icons.local_fire_department_rounded,
+            label: streakLabel,
+            backgroundColor: colors.surfaceContainerHighest.withValues(alpha: 0.18),
+            borderColor: theme.dividerColor,
+            textColor: colors.onSurfaceVariant,
+          ),
+          _buildBehaviorChip(
+            icon: Icons.event_available_rounded,
+            label: checkInLabel,
+            backgroundColor: colors.surfaceContainerHighest.withValues(alpha: 0.18),
+            borderColor: theme.dividerColor,
+            textColor: colors.onSurfaceVariant,
+          ),
+        ],
+      ),
+    );
   }
 
   void _insertQuickText(String text) {
@@ -227,6 +450,7 @@ class _CoachChatPageState extends State<CoachChatPage> {
                 ],
               ),
             ),
+            if (!_isBehaviorLoading) _buildBehaviorStrip(context),
             Expanded(
               child: ListView(
                 controller: _scrollController,
