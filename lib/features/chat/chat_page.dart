@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import '../../core/widgets/identity_avatar.dart';
+
 class CoachChatPage extends StatefulWidget {
   const CoachChatPage({
     super.key,
@@ -23,7 +25,7 @@ class _CoachChatPageState extends State<CoachChatPage> {
   late final List<_ChatMessage> _messages = <_ChatMessage>[
     const _ChatMessage(
       text:
-          'Доброе утро, Анна! Посмотрел ваш фотодневник за вчера. Отличный выбор белков на ужин.',
+          'Доброе утро! Посмотрел ваш фотодневник за вчера. Отличный выбор белков на ужин.',
       time: '09:15',
       isSent: false,
     ),
@@ -133,6 +135,7 @@ class _CoachChatPageState extends State<CoachChatPage> {
     final ColorScheme colors = theme.colorScheme;
     final TextTheme textTheme = theme.textTheme;
     final double bottomInset = MediaQuery.of(context).viewInsets.bottom;
+    final String peerName = widget.peerName.trim().isEmpty ? 'Без имени' : widget.peerName.trim();
 
     return Scaffold(
       backgroundColor: theme.scaffoldBackgroundColor,
@@ -163,14 +166,20 @@ class _CoachChatPageState extends State<CoachChatPage> {
                       color: colors.onSurface,
                     ),
                   ),
-                  _HeaderAvatar(imageUrl: widget.avatarUrl, size: 44),
+                  IdentityAvatar(
+                    displayName: peerName,
+                    avatarUrl: widget.avatarUrl,
+                    size: 44,
+                    backgroundColor: colors.secondary.withValues(alpha: 0.18),
+                    textColor: colors.onSurface,
+                  ),
                   const SizedBox(width: 12),
                   Expanded(
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: <Widget>[
                         Text(
-                          widget.peerName,
+                          peerName,
                           style: textTheme.titleMedium?.copyWith(
                             color: colors.onSurface,
                             fontWeight: FontWeight.w600,
@@ -362,43 +371,6 @@ class _CoachChatPageState extends State<CoachChatPage> {
   }
 }
 
-class _HeaderAvatar extends StatelessWidget {
-  const _HeaderAvatar({required this.imageUrl, required this.size});
-
-  final String imageUrl;
-  final double size;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      width: size,
-      height: size,
-      padding: const EdgeInsets.all(2),
-      decoration: BoxDecoration(
-        shape: BoxShape.circle,
-        border: Border.all(
-          color: Theme.of(context).colorScheme.secondary.withValues(alpha: 0.3),
-          width: 2,
-        ),
-      ),
-      child: ClipOval(
-        child: Image.network(
-          imageUrl,
-          fit: BoxFit.cover,
-          errorBuilder: (_, __, ___) => Container(
-            color: Theme.of(context).colorScheme.secondary.withValues(alpha: 0.2),
-            alignment: Alignment.center,
-            child: Icon(
-              Icons.person_rounded,
-              color: Theme.of(context).colorScheme.onSurface,
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
 class _ActionChip extends StatelessWidget {
   const _ActionChip({
     required this.label,
@@ -510,4 +482,3 @@ class _ChatMessage {
   final bool isSent;
   final String? imageUrl;
 }
-

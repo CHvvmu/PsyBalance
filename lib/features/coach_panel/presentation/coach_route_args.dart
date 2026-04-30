@@ -2,10 +2,12 @@ class CoachClientRouteArgs {
   const CoachClientRouteArgs({
     required this.clientId,
     required this.clientName,
+    this.avatarUrl = '',
   });
 
   final String clientId;
   final String clientName;
+  final String avatarUrl;
 
   String get userId => clientId;
 }
@@ -71,17 +73,10 @@ class CoachClientCardData {
     }
 
     final String fullName = readText('full_name');
-    final String fallbackName = readText('name');
     final String email = readText('email');
     final String progressStatus = readText('progress_status');
     final String notes = readText('notes');
-    final String clientName = fullName.isNotEmpty
-        ? fullName
-        : fallbackName.isNotEmpty
-            ? fallbackName
-            : email.isNotEmpty
-                ? email
-                : clientId;
+    final String clientName = fullName.isNotEmpty ? fullName : 'Без имени';
 
     return CoachClientCardData(
       clientId: clientId,

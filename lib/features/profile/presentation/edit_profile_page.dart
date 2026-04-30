@@ -108,7 +108,7 @@ class _EditProfilePageState extends State<EditProfilePage> {
 
       setState(() {
         _currentUserId = currentUser.id;
-        _nameController.text = row['full_name']?.toString() ?? row['name']?.toString() ?? '';
+        _nameController.text = row['full_name']?.toString() ?? '';
         _selectedBirthDate = _parseDateTime(row['birth_date']?.toString());
         _birthDateController.text = _selectedBirthDate == null ? '' : _formatDate(_selectedBirthDate!);
         _heightController.text = row['height_cm']?.toString() ?? '';
@@ -128,7 +128,13 @@ class _EditProfilePageState extends State<EditProfilePage> {
 
       print('PROFILE LOAD SUCCESS');
     } catch (e) {
-      print('PROFILE LOAD ERROR: $e');
+      if (e is PostgrestException) {
+        print(
+          'PROFILE LOAD ERROR: message=${e.message} details=${e.details} hint=${e.hint}',
+        );
+      } else {
+        print('PROFILE LOAD ERROR: $e');
+      }
     }
   }
 
@@ -187,6 +193,19 @@ class _EditProfilePageState extends State<EditProfilePage> {
       };
 
       await _client.from('users').update(payload).eq('id', userId);
+      final Map<String, dynamic> profileMetadata = <String, dynamic>{
+        ...?currentUser.userMetadata,
+        'full_name': fullName,
+      };
+      try {
+        await _client.auth.updateUser(
+          UserAttributes(
+            data: profileMetadata,
+          ),
+        );
+      } catch (e) {
+        print('PROFILE METADATA SYNC ERROR: $e');
+      }
 
       if (!mounted) {
         return;
@@ -196,7 +215,13 @@ class _EditProfilePageState extends State<EditProfilePage> {
       _showSnackBar('Профиль сохранён');
       Navigator.of(context).pop(true);
     } catch (e) {
-      print('PROFILE UPDATE ERROR: $e');
+      if (e is PostgrestException) {
+        print(
+          'PROFILE UPDATE ERROR: message=${e.message} details=${e.details} hint=${e.hint}',
+        );
+      } else {
+        print('PROFILE UPDATE ERROR: $e');
+      }
       if (mounted) {
         _showSnackBar('Ошибка сохранения');
       }
@@ -462,22 +487,39 @@ class _EditProfilePageState extends State<EditProfilePage> {
         await _client.from('users').update(<String, dynamic>{
           'avatar_url': avatarUrl,
         }).eq('id', userId);
-        return;
-      } catch (e) {
+    } catch (e) {
+      if (e is PostgrestException) {
+        print(
+          'PROFILE AVATAR DB ERROR: message=${e.message} details=${e.details} hint=${e.hint}',
+        );
+      } else {
         print('PROFILE AVATAR DB ERROR: $e');
       }
     }
+  }
 
     try {
-      await _client.auth.updateUser(
-        UserAttributes(
-          data: <String, dynamic>{
-            'avatar_url': avatarUrl,
-          },
-        ),
-      );
+      final Map<String, dynamic> metadata = <String, dynamic>{
+        ...?_client.auth.currentUser?.userMetadata,
+        'avatar_url': avatarUrl,
+      };
+      try {
+        await _client.auth.updateUser(
+          UserAttributes(
+            data: metadata,
+          ),
+        );
+      } catch (e) {
+        print('PROFILE AVATAR METADATA SYNC ERROR: $e');
+      }
     } catch (e) {
-      print('PROFILE AVATAR METADATA ERROR: $e');
+      if (e is PostgrestException) {
+        print(
+          'PROFILE AVATAR METADATA ERROR: message=${e.message} details=${e.details} hint=${e.hint}',
+        );
+      } else {
+        print('PROFILE AVATAR METADATA ERROR: $e');
+      }
     }
   }
 

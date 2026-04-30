@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+import '../../../core/widgets/identity_avatar.dart';
 import 'add_client_page.dart';
 import 'coach_route_args.dart';
 
@@ -199,6 +200,7 @@ class _CoachClientsPageState extends State<CoachClientsPage> {
       CoachClientRouteArgs(
         clientId: client.clientId,
         clientName: client.displayName,
+        avatarUrl: client.avatarUrl,
       ),
     );
   }
@@ -211,8 +213,19 @@ class _CoachClientsPageState extends State<CoachClientsPage> {
       CoachClientRouteArgs(
         clientId: client.clientId,
         clientName: client.displayName,
+        avatarUrl: client.avatarUrl,
       ),
     );
+  }
+
+  void _showCheckInComingSoon(BuildContext context) {
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(
+        const SnackBar(
+          content: Text('Функция отметки скоро появится'),
+        ),
+      );
   }
 
   @override
@@ -251,7 +264,7 @@ class _CoachClientsPageState extends State<CoachClientsPage> {
         foregroundColor: colors.onPrimary,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
         icon: const Icon(Icons.group_add_rounded),
-        label: const Text('Новый клиент'),
+        label: const Text('Добавить клиента'),
       ),
       body: SafeArea(
         child: RefreshIndicator(
@@ -377,7 +390,7 @@ class _CoachClientsPageState extends State<CoachClientsPage> {
                   ),
                   _CoachStatCard(
                     value: stagnatingCount.toString(),
-                    label: 'Снижение',
+                    label: 'Неактивные',
                     background: const Color(0xFFFEF3C7),
                     border: const Color(0xFFFDE68A),
                     textColor: const Color(0xFF92400E),
@@ -407,6 +420,7 @@ class _CoachClientsPageState extends State<CoachClientsPage> {
                       item: client,
                       onOpenClient: () => _openClient(client),
                       onOpenChat: () => _openChat(client),
+                      onCheckIn: () => _showCheckInComingSoon(context),
                     ),
                   ),
                 ),
@@ -472,120 +486,342 @@ class _CoachClientCard extends StatelessWidget {
     required this.item,
     required this.onOpenClient,
     required this.onOpenChat,
+    required this.onCheckIn,
   });
 
   final CoachClientCardData item;
   final VoidCallback onOpenClient;
   final VoidCallback onOpenChat;
+  final VoidCallback onCheckIn;
+
+  @override
+  Widget build(BuildContext context) {
+    try {
+      return _buildCard(context);
+    } catch (error, stackTrace) {
+      debugPrint('COACH CLIENT CARD BUILD ERROR: $error');
+      debugPrint('COACH CLIENT CARD BUILD STACK: $stackTrace');
+      return _CoachClientCardFallback(
+        onOpenClient: onOpenClient,
+        onOpenChat: onOpenChat,
+        onCheckIn: onCheckIn,
+      );
+    }
+  }
+
+  Widget _buildCard(BuildContext context) {
+    final ThemeData theme = Theme.of(context);
+    final ColorScheme colors = theme.colorScheme;
+    final Color cardBackground =
+        theme.brightness == Brightness.light ? const Color(0xFFF8F4ED) : colors.surfaceContainerLow;
+    final String displayName = _displayNameFor(item);
+    final String? ageLabel = _ageLabelFor(item.age);
+    final String behavioralStatus = _statusValue(item);
+    final _StatusColors statusColors = _statusColorsFor(behavioralStatus);
+    final String statusLabel = _statusLabelFor(behavioralStatus);
+    final String? goal = _cleanVisibleText(item.goal);
+    final String? activityLevel = _cleanVisibleText(item.activityLevel);
+    final String? notes = _cleanVisibleText(item.notes);
+
+    final List<Widget> metaRows = <Widget>[];
+
+    final Widget? goalRow = _buildMetaRow(
+      icon: Icons.flag_rounded,
+      label: 'Цель',
+      value: goal,
+    );
+    if (goalRow != null) {
+      metaRows.add(goalRow);
+    }
+
+    final Widget? activityRow = _buildMetaRow(
+      icon: Icons.bolt_rounded,
+      label: 'Активность',
+      value: activityLevel,
+    );
+    if (activityRow != null) {
+      metaRows.add(activityRow);
+    }
+
+    final Widget? streakRow = _buildMetaRow(
+      icon: Icons.local_fire_department_rounded,
+      label: 'Серия',
+      value: _consistencyStreakLabelFor(item),
+    );
+    if (streakRow != null) {
+      metaRows.add(streakRow);
+    }
+
+    final Widget? lastActivityRow = _buildMetaRow(
+      icon: Icons.schedule_rounded,
+      label: 'Последняя активность',
+      value: _formatLastActivityLabel(item.lastActivityDate),
+    );
+    if (lastActivityRow != null) {
+      metaRows.add(lastActivityRow);
+    }
+
+    return Material(
+      color: cardBackground,
+      borderRadius: BorderRadius.circular(24),
+      child: InkWell(
+        onTap: onOpenClient,
+        borderRadius: BorderRadius.circular(24),
+        child: Container(
+          padding: const EdgeInsets.all(18),
+          decoration: BoxDecoration(
+            color: cardBackground,
+            borderRadius: BorderRadius.circular(24),
+            border: Border.all(color: theme.dividerColor.withValues(alpha: 0.7)),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: <Widget>[
+              _buildHeader(
+                context,
+                displayName: displayName,
+                ageLabel: ageLabel,
+                avatarUrl: _cleanVisibleText(item.avatarUrl) ?? '',
+                statusLabel: statusLabel,
+                statusColors: statusColors,
+              ),
+              if (metaRows.isNotEmpty) ...<Widget>[
+                const SizedBox(height: 8),
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: colors.surface,
+                    borderRadius: BorderRadius.circular(18),
+                    border: Border.all(color: theme.dividerColor.withValues(alpha: 0.6)),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: <Widget>[
+                      metaRows.first,
+                      for (final Widget row in metaRows.skip(1)) ...<Widget>[
+                        const SizedBox(height: 8),
+                        row,
+                      ],
+                    ],
+                  ),
+                ),
+              ],
+              const SizedBox(height: 14),
+              const _BehaviorSummaryBlock(),
+              if (notes != null) ...<Widget>[
+                const SizedBox(height: 12),
+                _CoachNoteBlock(notes: notes),
+              ],
+              const SizedBox(height: 14),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: <Widget>[
+                  SizedBox(
+                    width: 100,
+                    child: _CardActionButton(
+                      icon: Icons.open_in_new_rounded,
+                      label: 'Открыть',
+                      onPressed: onOpenClient,
+                    ),
+                  ),
+                  SizedBox(
+                    width: 100,
+                    child: _CardActionButton(
+                      icon: Icons.chat_bubble_outline_rounded,
+                      label: 'Чат',
+                      onPressed: onOpenChat,
+                    ),
+                  ),
+                  SizedBox(
+                    width: 100,
+                    child: _CardActionButton(
+                      icon: Icons.check_circle_outline_rounded,
+                      label: 'Отметка',
+                      onPressed: onCheckIn,
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildHeader(
+    BuildContext context, {
+    required String displayName,
+    required String? ageLabel,
+    required String avatarUrl,
+    required String statusLabel,
+    required _StatusColors statusColors,
+  }) {
+    final ThemeData theme = Theme.of(context);
+    final ColorScheme colors = theme.colorScheme;
+    final TextTheme textTheme = theme.textTheme;
+
+    Widget identity() {
+      return Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          IdentityAvatar(
+            displayName: displayName.trim().isEmpty ? 'Без имени' : displayName,
+            avatarUrl: avatarUrl,
+            size: 52,
+            backgroundColor: colors.secondary.withValues(alpha: 0.18),
+            textColor: colors.onSurface,
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: <Widget>[
+                Text(
+                  displayName,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: textTheme.titleMedium?.copyWith(
+                    color: colors.onSurface,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+                if (ageLabel != null) ...<Widget>[
+                  const SizedBox(height: 4),
+                  Text(
+                    ageLabel,
+                    style: textTheme.bodySmall?.copyWith(
+                      color: colors.onSurfaceVariant,
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+        ],
+      );
+    }
+
+    return LayoutBuilder(
+      builder: (BuildContext context, BoxConstraints constraints) {
+        final bool compact = constraints.maxWidth < 360;
+        final Widget badge = _StatusBadge(
+          label: statusLabel,
+          statusColors: statusColors,
+        );
+
+        if (compact) {
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: <Widget>[
+              identity(),
+              const SizedBox(height: 10),
+              badge,
+            ],
+          );
+        }
+
+        return Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: <Widget>[
+            Expanded(child: identity()),
+            const SizedBox(width: 10),
+            Flexible(
+              fit: FlexFit.loose,
+              child: Align(
+                alignment: Alignment.topRight,
+                child: badge,
+              ),
+            ),
+          ],
+        );
+      },
+    );
+  }
+}
+
+class _CoachClientCardFallback extends StatelessWidget {
+  const _CoachClientCardFallback({
+    required this.onOpenClient,
+    required this.onOpenChat,
+    required this.onCheckIn,
+  });
+
+  final VoidCallback onOpenClient;
+  final VoidCallback onOpenChat;
+  final VoidCallback onCheckIn;
 
   @override
   Widget build(BuildContext context) {
     final ThemeData theme = Theme.of(context);
     final ColorScheme colors = theme.colorScheme;
-    final TextTheme textTheme = theme.textTheme;
-    final _StatusColors statusColors = _statusColorsFor(item.displayProgressStatus);
+    final Color cardBackground =
+        theme.brightness == Brightness.light ? const Color(0xFFF8F4ED) : colors.surfaceContainerLow;
 
     return Material(
-      color: colors.surface,
-      borderRadius: BorderRadius.circular(22),
+      color: cardBackground,
+      borderRadius: BorderRadius.circular(24),
       child: InkWell(
         onTap: onOpenClient,
-        borderRadius: BorderRadius.circular(22),
+        borderRadius: BorderRadius.circular(24),
         child: Container(
-          padding: const EdgeInsets.all(16),
+          padding: const EdgeInsets.all(18),
           decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(22),
-            border: Border.all(color: theme.dividerColor),
+            color: cardBackground,
+            borderRadius: BorderRadius.circular(24),
+            border: Border.all(color: theme.dividerColor.withValues(alpha: 0.7)),
           ),
           child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: <Widget>[
               Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: <Widget>[
-                  _ClientAvatar(
-                    name: item.displayName,
-                    avatarUrl: item.avatarUrl,
+                  Icon(
+                    Icons.warning_rounded,
+                    color: colors.tertiary,
+                    size: 20,
                   ),
-                  const SizedBox(width: 12),
+                  const SizedBox(width: 8),
                   Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: <Widget>[
-                        Text(
-                          item.displayName,
-                          style: textTheme.titleMedium?.copyWith(
-                            color: colors.onSurface,
-                            fontWeight: FontWeight.w700,
-                          ),
-                        ),
-                        const SizedBox(height: 4),
-                        Text(
-                          item.email.isNotEmpty ? item.email : 'Email не указан',
-                          style: textTheme.bodySmall,
-                        ),
-                        const SizedBox(height: 10),
-                        Wrap(
-                          spacing: 8,
-                          runSpacing: 8,
-                          children: <Widget>[
-                            _MetaChip(label: 'Возраст', value: item.displayAgeLabel),
-                            _MetaChip(label: 'Цель', value: item.displayGoal),
-                            _MetaChip(
-                              label: 'Активность',
-                              value: item.displayActivityLevel,
-                            ),
-                          ],
-                        ),
-                      ],
+                    child: Text(
+                      'Карточка клиента временно недоступна',
+                      style: theme.textTheme.bodyMedium?.copyWith(
+                        color: colors.onSurface,
+                        fontWeight: FontWeight.w600,
+                      ),
                     ),
-                  ),
-                  const SizedBox(width: 10),
-                  _StatusBadge(
-                    label: item.displayProgressStatusLabel,
-                    statusColors: statusColors,
                   ),
                 ],
               ),
               const SizedBox(height: 12),
-              Text(
-                'Последняя активность: ${item.displayLastActivityDate}',
-                style: textTheme.bodySmall,
-              ),
-              const SizedBox(height: 4),
-              Text(
-                'Последняя сессия: ${item.displayLastSessionDate}',
-                style: textTheme.bodySmall,
-              ),
-              const SizedBox(height: 4),
-              Text(
-                item.onboardingLabel,
-                style: textTheme.bodySmall,
-              ),
-              if (item.notes.trim().isNotEmpty) ...<Widget>[
-                const SizedBox(height: 8),
-                Text(
-                  item.notes,
-                  style: textTheme.bodySmall,
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ],
-              const SizedBox(height: 14),
-              Row(
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
                 children: <Widget>[
-                  Expanded(
-                    child: OutlinedButton(
+                  SizedBox(
+                    width: 100,
+                    child: _CardActionButton(
+                      icon: Icons.open_in_new_rounded,
+                      label: 'Открыть',
                       onPressed: onOpenClient,
-                      child: const Text('Открыть'),
                     ),
                   ),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: OutlinedButton.icon(
+                  SizedBox(
+                    width: 100,
+                    child: _CardActionButton(
+                      icon: Icons.chat_bubble_outline_rounded,
+                      label: 'Чат',
                       onPressed: onOpenChat,
-                      icon: const Icon(Icons.chat_bubble_outline_rounded, size: 16),
-                      label: const Text('Чат'),
+                    ),
+                  ),
+                  SizedBox(
+                    width: 100,
+                    child: _CardActionButton(
+                      icon: Icons.check_circle_outline_rounded,
+                      label: 'Отметка',
+                      onPressed: onCheckIn,
                     ),
                   ),
                 ],
@@ -598,9 +834,186 @@ class _CoachClientCard extends StatelessWidget {
   }
 }
 
-class _MetaChip extends StatelessWidget {
-  const _MetaChip({required this.label, required this.value});
+String _displayNameFor(CoachClientCardData item) {
+  final String name = _cleanVisibleText(item.displayName) ?? '';
+  final String email = _cleanVisibleText(item.email) ?? '';
+  if (name.isEmpty || name == item.clientId || (email.isNotEmpty && name == email)) {
+    return 'Без имени';
+  }
 
+  return name;
+}
+
+String? _ageLabelFor(int? age) {
+  if (age == null || age < 0) {
+    return null;
+  }
+
+  return '$age лет';
+}
+
+String? _cleanVisibleText(String? value) {
+  final String trimmed = value?.trim() ?? '';
+  if (trimmed.isEmpty) {
+    return null;
+  }
+
+  switch (trimmed.toLowerCase()) {
+    case 'null':
+    case 'none':
+    case 'undefined':
+      return null;
+    default:
+      return trimmed;
+  }
+}
+
+String _statusValue(CoachClientCardData item) {
+  final String explicitStatus = _normalizedExplicitStatus(item.progressStatus);
+  if (explicitStatus.isNotEmpty) {
+    return explicitStatus;
+  }
+
+  final bool hasRecentActivity = _hasRecentActivity(item.lastActivityDate) ||
+      _hasRecentActivity(item.lastSessionDate);
+  final bool hasAnyBehavioralActivity = item.lastActivityDate != null || item.lastSessionDate != null;
+  final bool isNewClient = !item.onboardingCompleted && !hasAnyBehavioralActivity;
+
+  if (isNewClient) {
+    return 'onboarding';
+  }
+
+  if (!hasRecentActivity) {
+    return 'inactive';
+  }
+
+  return 'engaged';
+}
+
+String _normalizedExplicitStatus(String status) {
+  final String cleaned = _cleanVisibleText(status) ?? '';
+  final String normalized = cleaned.toLowerCase();
+
+  switch (normalized) {
+    case 'engaged':
+    case 'active':
+      return 'engaged';
+    case 'stable':
+      return 'stable';
+    case 'inconsistent':
+    case 'stagnating':
+      return 'inconsistent';
+    case 'struggling':
+      return 'struggling';
+    case 'inactive':
+      return 'inactive';
+    case 'onboarding':
+    case 'beginner':
+      return 'onboarding';
+    default:
+      return '';
+  }
+}
+
+bool _hasRecentActivity(DateTime? value) {
+  if (value == null) {
+    return false;
+  }
+
+  final DateTime now = DateTime.now();
+  return now.difference(value).inDays < 7;
+}
+
+Widget? _buildMetaRow({
+  required IconData icon,
+  required String label,
+  required String? value,
+}) {
+  final String trimmedValue = value?.trim() ?? '';
+  if (trimmedValue.isEmpty) {
+    return null;
+  }
+
+  return _CoachInfoRow(
+    icon: icon,
+    label: label,
+    value: trimmedValue,
+  );
+}
+
+String? _consistencyStreakLabelFor(CoachClientCardData item) {
+  return null;
+}
+
+String _formatLastActivityLabel(DateTime? value) {
+  if (value == null) {
+    return '-';
+  }
+
+  final DateTime now = DateTime.now();
+  final DateTime today = DateTime(now.year, now.month, now.day);
+  final DateTime activityDay = DateTime(value.year, value.month, value.day);
+  final int dayDelta = today.difference(activityDay).inDays;
+
+  if (dayDelta <= 0) {
+    return 'сегодня';
+  }
+
+  if (dayDelta == 1) {
+    return 'вчера';
+  }
+
+  return '${_daysAgoLabel(dayDelta)} назад';
+}
+
+String _daysAgoLabel(int days) {
+  final int mod100 = days % 100;
+  if (mod100 >= 11 && mod100 <= 14) {
+    return '$days дней';
+  }
+
+  switch (days % 10) {
+    case 1:
+      return '$days день';
+    case 2:
+    case 3:
+    case 4:
+      return '$days дня';
+    default:
+      return '$days дней';
+  }
+}
+
+String _statusLabelFor(String status) {
+  switch (status.trim().toLowerCase()) {
+    case 'engaged':
+    case 'active':
+      return 'Вовлечён';
+    case 'stable':
+      return 'Стабильно';
+    case 'inconsistent':
+    case 'stagnating':
+      return 'Нестабильно';
+    case 'struggling':
+      return 'Нужна поддержка';
+    case 'inactive':
+      return 'Пауза';
+    case 'onboarding':
+    case 'beginner':
+      return 'Адаптация';
+    default:
+      return 'Адаптация';
+  }
+}
+
+class _CoachInfoRow extends StatelessWidget {
+  const _CoachInfoRow({
+    required this.icon,
+    required this.label,
+    required this.value,
+  });
+
+  final IconData icon;
   final String label;
   final String value;
 
@@ -609,16 +1022,191 @@ class _MetaChip extends StatelessWidget {
     final ThemeData theme = Theme.of(context);
     final ColorScheme colors = theme.colorScheme;
 
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: <Widget>[
+        Icon(
+          icon,
+          size: 16,
+          color: colors.primary.withValues(alpha: 0.78),
+        ),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Text.rich(
+            TextSpan(
+              children: <InlineSpan>[
+                TextSpan(
+                  text: '$label: ',
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: colors.onSurfaceVariant,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                TextSpan(
+                  text: value,
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: colors.onSurfaceVariant,
+                  ),
+                ),
+              ],
+            ),
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _BehaviorSummaryBlock extends StatelessWidget {
+  const _BehaviorSummaryBlock();
+
+  @override
+  Widget build(BuildContext context) {
+    final ThemeData theme = Theme.of(context);
+    final ColorScheme colors = theme.colorScheme;
+
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: theme.scaffoldBackgroundColor,
-        borderRadius: BorderRadius.circular(999),
-        border: Border.all(color: theme.dividerColor),
+        color: colors.surface,
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: theme.dividerColor.withValues(alpha: 0.6)),
       ),
-      child: Text(
-        '$label: $value',
-        style: theme.textTheme.labelSmall?.copyWith(color: colors.onSurface),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          Icon(
+            Icons.insights_rounded,
+            size: 18,
+            color: colors.primary.withValues(alpha: 0.8),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: <Widget>[
+                Text(
+                  'Сводка по поведению',
+                  style: theme.textTheme.labelMedium?.copyWith(
+                    color: colors.onSurface,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  'Пока недостаточно данных',
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: colors.onSurfaceVariant,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _CoachNoteBlock extends StatelessWidget {
+  const _CoachNoteBlock({required this.notes});
+
+  final String notes;
+
+  @override
+  Widget build(BuildContext context) {
+    final ThemeData theme = Theme.of(context);
+    final ColorScheme colors = theme.colorScheme;
+
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: colors.secondaryContainer,
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: theme.dividerColor.withValues(alpha: 0.6)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          Row(
+            children: <Widget>[
+              Icon(
+                Icons.sticky_note_2_outlined,
+                size: 18,
+                color: colors.primary.withValues(alpha: 0.85),
+              ),
+              const SizedBox(width: 8),
+              Text(
+                'Заметка коуча',
+                style: theme.textTheme.labelMedium?.copyWith(
+                  color: colors.onSurface,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Text(
+            notes,
+            maxLines: 4,
+            overflow: TextOverflow.ellipsis,
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: colors.onSurfaceVariant,
+              height: 1.35,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _CardActionButton extends StatelessWidget {
+  const _CardActionButton({
+    required this.icon,
+    required this.label,
+    required this.onPressed,
+  });
+
+  final IconData icon;
+  final String label;
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    final ThemeData theme = Theme.of(context);
+    final ColorScheme colors = theme.colorScheme;
+
+    return SizedBox(
+      height: 40,
+      child: OutlinedButton(
+        onPressed: onPressed,
+        style: OutlinedButton.styleFrom(
+          padding: const EdgeInsets.symmetric(horizontal: 10),
+          foregroundColor: colors.onSurface,
+          backgroundColor: colors.surfaceContainerHighest.withValues(alpha: 0.2),
+          side: BorderSide(color: theme.dividerColor.withValues(alpha: 0.7)),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+          textStyle: theme.textTheme.labelMedium?.copyWith(
+            fontWeight: FontWeight.w700,
+          ),
+          visualDensity: VisualDensity.compact,
+        ),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          mainAxisSize: MainAxisSize.min,
+          children: <Widget>[
+            Icon(icon, size: 16),
+            const SizedBox(width: 6),
+            Text(
+              label,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -643,7 +1231,12 @@ class _StatusBadge extends StatelessWidget {
       ),
       child: Text(
         label,
-        style: textTheme.labelSmall?.copyWith(color: statusColors.text),
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: textTheme.labelSmall?.copyWith(
+          color: statusColors.text,
+          fontWeight: FontWeight.w700,
+        ),
       ),
     );
   }
@@ -721,74 +1314,6 @@ class _ErrorStateCard extends StatelessWidget {
   }
 }
 
-class _ClientAvatar extends StatelessWidget {
-  const _ClientAvatar({required this.name, required this.avatarUrl});
-
-  final String name;
-  final String avatarUrl;
-
-  @override
-  Widget build(BuildContext context) {
-    final List<String> parts = name.split(' ').where((String part) => part.isNotEmpty).toList();
-    final String initials = parts
-        .take(2)
-        .map((String part) => part.characters.first.toUpperCase())
-        .join();
-
-    final Color background = const Color(0xFFE8E2D9).withValues(alpha: 1);
-
-    if (avatarUrl.trim().isNotEmpty) {
-      return Container(
-        width: 48,
-        height: 48,
-        decoration: BoxDecoration(
-          color: background,
-          shape: BoxShape.circle,
-        ),
-        child: ClipOval(
-          child: Image.network(
-            avatarUrl,
-            fit: BoxFit.cover,
-            errorBuilder: (_, __, ___) => _InitialsAvatar(
-              initials: initials,
-              background: background,
-            ),
-          ),
-        ),
-      );
-    }
-
-    return _InitialsAvatar(initials: initials, background: background);
-  }
-}
-
-class _InitialsAvatar extends StatelessWidget {
-  const _InitialsAvatar({required this.initials, required this.background});
-
-  final String initials;
-  final Color background;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      width: 48,
-      height: 48,
-      decoration: BoxDecoration(
-        color: background,
-        shape: BoxShape.circle,
-      ),
-      alignment: Alignment.center,
-      child: Text(
-        initials,
-        style: Theme.of(context).textTheme.labelMedium?.copyWith(
-          color: Theme.of(context).colorScheme.onSurface,
-          fontWeight: FontWeight.w700,
-        ),
-      ),
-    );
-  }
-}
-
 class _StatusColors {
   const _StatusColors({
     required this.background,
@@ -802,30 +1327,51 @@ class _StatusColors {
 }
 
 _StatusColors _statusColorsFor(String status) {
-  switch (status.toLowerCase()) {
+  switch (status.trim().toLowerCase()) {
+    case 'engaged':
     case 'active':
       return const _StatusColors(
-        background: Color(0xFFDCFCE7),
-        border: Color(0xFFBBF7D0),
+        background: Color(0xFFE4F7ED),
+        border: Color(0xFFB7E4CA),
         text: Color(0xFF166534),
       );
+    case 'stable':
+      return const _StatusColors(
+        background: Color(0xFFE8F1FF),
+        border: Color(0xFFC9D8FF),
+        text: Color(0xFF1D4ED8),
+      );
+    case 'inconsistent':
     case 'stagnating':
       return const _StatusColors(
-        background: Color(0xFFFEF3C7),
-        border: Color(0xFFFDE68A),
-        text: Color(0xFF92400E),
+        background: Color(0xFFFFF3D9),
+        border: Color(0xFFF2D08A),
+        text: Color(0xFF9A6700),
       );
-    case 'no data':
+    case 'struggling':
+      return const _StatusColors(
+        background: Color(0xFFFFE8E8),
+        border: Color(0xFFF5B5B5),
+        text: Color(0xFFB42318),
+      );
+    case 'inactive':
       return const _StatusColors(
         background: Color(0xFFF3F4F6),
         border: Color(0xFFE5E7EB),
         text: Color(0xFF6B7280),
       );
+    case 'onboarding':
+    case 'beginner':
+      return const _StatusColors(
+        background: Color(0xFFF3E8FF),
+        border: Color(0xFFE9D5FF),
+        text: Color(0xFF7C3AED),
+      );
     default:
       return const _StatusColors(
-        background: Color(0xFFE0F2FE),
-        border: Color(0xFFBAE6FD),
-        text: Color(0xFF075985),
+        background: Color(0xFFF3E8FF),
+        border: Color(0xFFE9D5FF),
+        text: Color(0xFF7C3AED),
       );
   }
 }

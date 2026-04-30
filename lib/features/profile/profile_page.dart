@@ -105,7 +105,13 @@ class _ProfilePageState extends State<ProfilePage> {
       });
       debugPrint('PROFILE LOAD SUCCESS');
     } catch (e) {
-      debugPrint('PROFILE LOAD ERROR: $e');
+      if (e is PostgrestException) {
+        debugPrint(
+          'PROFILE LOAD ERROR: message=${e.message} details=${e.details} hint=${e.hint}',
+        );
+      } else {
+        debugPrint('PROFILE LOAD ERROR: $e');
+      }
       if (!mounted) {
         return;
       }
@@ -140,10 +146,7 @@ class _ProfilePageState extends State<ProfilePage> {
     final TextTheme textTheme = theme.textTheme;
     final String email =
         _profileText('email', fallback: widget.authService.currentUser?.email ?? '—');
-    final String displayName = _profileText(
-      'full_name',
-      fallback: _profileText('name', fallback: 'Без имени'),
-    );
+    final String displayName = _profileText('full_name', fallback: 'Без имени');
     final String avatarUrl = _avatarUrl();
 
     if (_isLoading && _userData == null) {
@@ -596,4 +599,3 @@ class _LogoutButton extends StatelessWidget {
     );
   }
 }
-

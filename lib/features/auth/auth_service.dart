@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../../core/config/app_config.dart';
@@ -64,7 +65,7 @@ class AuthService {
   Future<void> loadUserRole() async {
     final User? user = _client.auth.currentUser;
     if (user == null) {
-      print('ROLE LOAD: skipped, user is null');
+      debugPrint('ROLE LOAD: skipped, user is null');
       return;
     }
 
@@ -81,22 +82,22 @@ class AuthService {
 
       if (roleFromTable != null) {
         _setRoleCache(roleFromTable);
-        print('ROLE LOAD: loaded role=${roleFromTable.value} from users table');
+        debugPrint('ROLE LOAD: loaded role=${roleFromTable.value} from users table');
         return;
       }
 
       final UserRole? roleFromMetadata = _readRoleFromCurrentUserMetadata();
       if (roleFromMetadata != null) {
         _setRoleCache(roleFromMetadata);
-        print('ROLE LOAD: fallback to metadata role=${roleFromMetadata.value}');
+        debugPrint('ROLE LOAD: fallback to metadata role=${roleFromMetadata.value}');
         return;
       }
 
-      print('ROLE LOAD: role is still null after users lookup');
+      debugPrint('ROLE LOAD: role is still null after users lookup');
     } on PostgrestException catch (error) {
-      print('ROLE LOAD ERROR: ${error.message}');
+      debugPrint('ROLE LOAD ERROR: ${error.message}');
     } catch (error) {
-      print('ROLE LOAD ERROR: $error');
+      debugPrint('ROLE LOAD ERROR: $error');
     }
   }
 
@@ -252,7 +253,7 @@ class AuthService {
       throw AuthFailure('Пароль должен содержать минимум 6 символов.');
     }
 
-    print(
+    debugPrint(
       'SIGNUP REQUEST: email=${_maskEmail(normalizedEmail)}, '
       'SUPABASE_URL=${AppConfig.supabaseUrl}, '
       'ANON_KEY_PRESENT=${AppConfig.supabaseAnonKey.isNotEmpty}',
@@ -269,15 +270,15 @@ class AuthService {
             'onboarding_completed': false,
           },
         );
-        print(
+        debugPrint(
           'SIGNUP RESPONSE: userId=${response.user?.id}, '
           'session=${response.session != null}, '
           'emailConfirmedAt=${response.user?.emailConfirmedAt}',
         );
-        print('SIGNUP SUCCESS: ${response.user?.id}');
+        debugPrint('SIGNUP SUCCESS: ${response.user?.id}');
       } catch (e, stack) {
-        print('SIGNUP ERROR: $e');
-        print(stack);
+        debugPrint('SIGNUP ERROR: $e');
+        debugPrint(stack.toString());
         rethrow;
       }
 
@@ -575,4 +576,3 @@ class AuthService {
     return '${local[0]}***${local[local.length - 1]}@$domain';
   }
 }
-

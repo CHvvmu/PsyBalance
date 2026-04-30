@@ -31,7 +31,7 @@ class _CoachPlanEditorPageState extends State<CoachPlanEditorPage> {
 
   String get _displayClientName {
     final String trimmed = widget.clientName.trim();
-    return trimmed.isEmpty ? 'Клиент' : trimmed;
+    return trimmed.isEmpty ? 'Без имени' : trimmed;
   }
 
   @override
@@ -692,11 +692,6 @@ class _CoachPlanEditorPageState extends State<CoachPlanEditorPage> {
                               color: colors.onSurface,
                               fontWeight: FontWeight.w700,
                             ),
-                          ),
-                          const SizedBox(height: 6),
-                          Text(
-                            'Client ID: $_displayClientId',
-                            style: textTheme.bodySmall,
                           ),
                           const SizedBox(height: 14),
                         Wrap(

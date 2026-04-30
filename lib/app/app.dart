@@ -5,6 +5,7 @@ import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../core/theme/app_theme.dart';
+import '../core/navigation/app_route_observer.dart';
 import '../features/auth/auth_failure.dart';
 import '../features/auth/auth_service.dart';
 import '../features/auth/user_role.dart';
@@ -152,6 +153,7 @@ class _PsyBalanceAppState extends State<PsyBalanceApp> {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
       navigatorKey: _navigatorKey,
+      navigatorObservers: <NavigatorObserver>[appRouteObserver],
       initialRoute: AppRouter.splash,
       onGenerateRoute: _appRouter.onGenerateRoute,
       localizationsDelegates: const <LocalizationsDelegate<dynamic>>[
@@ -165,4 +167,3 @@ class _PsyBalanceAppState extends State<PsyBalanceApp> {
     );
   }
 }
-

@@ -25,11 +25,8 @@ alter table public.users
   add column if not exists onboarding_difficulties text[] not null default '{}';
 
 alter table public.users
-  add column if not exists name text,
   add column if not exists avatar_url text,
   add column if not exists goal text,
-  add column if not exists stress_level int,
-  add column if not exists energy_level int,
   add column if not exists sleep_quality int,
   add column if not exists activity_level text,
   add column if not exists food_preferences text,
@@ -114,6 +111,49 @@ create table if not exists public.check_ins (
   stress int,
   energy int,
   mood int
+);
+
+alter table public.check_ins
+  add column if not exists stress int,
+  add column if not exists energy int,
+  add column if not exists created_at timestamp with time zone default now();
+
+create unique index if not exists idx_check_ins_user_date on public.check_ins(user_id, date);
+
+alter table public.check_ins
+  enable row level security;
+
+drop policy if exists "check_ins_select_own_rows" on public.check_ins;
+
+create policy "check_ins_select_own_rows"
+on public.check_ins
+for select
+to authenticated
+using (
+  user_id = auth.uid()
+);
+
+drop policy if exists "check_ins_insert_own_rows" on public.check_ins;
+
+create policy "check_ins_insert_own_rows"
+on public.check_ins
+for insert
+to authenticated
+with check (
+  user_id = auth.uid()
+);
+
+drop policy if exists "check_ins_update_own_rows" on public.check_ins;
+
+create policy "check_ins_update_own_rows"
+on public.check_ins
+for update
+to authenticated
+using (
+  user_id = auth.uid()
+)
+with check (
+  user_id = auth.uid()
 );
 
 create table if not exists public.food_logs (
@@ -288,4 +328,3 @@ drop trigger if exists on_auth_user_created on auth.users;
 create trigger on_auth_user_created
 after insert on auth.users
 for each row execute function public.handle_new_user();
-

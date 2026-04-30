@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../features/admin/admin_page.dart';
+import '../../core/services/supabase_service.dart';
 import '../../features/auth/auth_page.dart';
 import '../../features/auth/auth_service.dart';
 import '../../features/auth/user_role.dart';
@@ -175,7 +176,7 @@ class AppRouter {
       case clientPlan:
         return _buildClientPlanRoute();
       case clientChat:
-        return _buildCoachChatRoute(settings);
+        return _buildClientChatRoute();
       case clientKnowledgeBase:
         return _buildKnowledgeBaseRoute();
       case profile:
@@ -257,7 +258,9 @@ class AppRouter {
               Navigator.of(context).pushNamed(clientKnowledgeBase),
           onOpenChat: () => Navigator.of(context).pushNamed(clientChat),
           onAdd: () => Navigator.of(context).pushNamed(clientCheckIn),
-          onOpenProfile: () => Navigator.of(context).pushNamed(profile),
+          onOpenProfile: () async {
+            await Navigator.of(context).pushNamed(profile);
+          },
         );
       },
     );
@@ -331,6 +334,7 @@ class AppRouter {
         return CoachClientDetailsPage(
           clientId: clientId,
           clientName: clientName,
+          avatarUrl: args?.avatarUrl.trim() ?? '',
           onBack: () => Navigator.of(context).maybePop(),
           onOpenCall: () {
             ScaffoldMessenger.of(context).showSnackBar(
@@ -360,25 +364,27 @@ class AppRouter {
     );
   }
 
-  MaterialPageRoute<dynamic> _buildCoachChatRoute(RouteSettings settings) {
-    final CoachClientRouteArgs? args = _coachClientArgsFrom(settings);
-    final String clientId = args?.clientId.trim() ?? '';
-    final String routeName = _normalizeRouteName(settings.name);
-    final String peerName = routeName == clientChat
-        ? 'Михаил Волков'
-        : (args?.clientName.trim().isNotEmpty == true ? args!.clientName.trim() : 'Клиент');
-
-    debugPrint('ROUTE ${routeName == clientChat ? 'clientChat' : 'coachChat'} BUILD: clientId=$clientId clientName=$peerName');
+  MaterialPageRoute<dynamic> _buildClientChatRoute() {
+    final String clientId = authService.currentUser?.id.trim() ?? '';
 
     return MaterialPageRoute<dynamic>(
-      settings: RouteSettings(name: routeName, arguments: settings.arguments),
-      builder: (_) {
-        return CoachChatPage(
-          peerName: peerName,
-          avatarUrl:
-              'https://dimg.dreamflow.cloud/v1/image/professional+male+health+coach+smiling',
-        );
-      },
+      settings: const RouteSettings(name: clientChat),
+      builder: (_) => _ResolvedClientChatPage(clientId: clientId),
+    );
+  }
+
+  MaterialPageRoute<dynamic> _buildCoachChatRoute(RouteSettings settings) {
+    final CoachClientRouteArgs? args = _coachClientArgsFrom(settings);
+    final String rawPeerName = args?.clientName.trim() ?? '';
+    final String peerName = rawPeerName.isNotEmpty ? rawPeerName : 'Без имени';
+    final String peerAvatarUrl = args?.avatarUrl.trim() ?? '';
+
+    return MaterialPageRoute<dynamic>(
+      settings: RouteSettings(name: coachChat, arguments: settings.arguments),
+      builder: (_) => CoachChatPage(
+        peerName: peerName,
+        avatarUrl: peerAvatarUrl,
+      ),
     );
   }
 
@@ -436,6 +442,76 @@ class AppRouter {
     );
   }
 
+}
+
+class _ResolvedClientChatPage extends StatefulWidget {
+  const _ResolvedClientChatPage({required this.clientId});
+
+  final String clientId;
+
+  @override
+  State<_ResolvedClientChatPage> createState() => _ResolvedClientChatPageState();
+}
+
+class _ResolvedClientChatPageState extends State<_ResolvedClientChatPage> {
+  String _peerName = 'Без имени';
+  String _avatarUrl = '';
+
+  @override
+  void initState() {
+    super.initState();
+    _loadIdentity();
+  }
+
+  Future<void> _loadIdentity() async {
+    final String clientId = widget.clientId.trim();
+    if (clientId.isEmpty) {
+      return;
+    }
+
+    try {
+      final Map<String, dynamic>? clientRow = await SupabaseService.client
+          .from('clients')
+          .select('coach_id, created_at')
+          .eq('user_id', clientId)
+          .order('created_at', ascending: false)
+          .limit(1)
+          .maybeSingle();
+
+      final String coachId = clientRow?['coach_id']?.toString().trim() ?? '';
+      if (coachId.isEmpty) {
+        return;
+      }
+
+      final Map<String, dynamic>? coachRow = await SupabaseService.client
+          .from('users')
+          .select('full_name, avatar_url')
+          .eq('id', coachId)
+          .maybeSingle();
+
+      if (!mounted || coachRow == null) {
+        return;
+      }
+
+      final String fullName = coachRow['full_name']?.toString().trim() ?? '';
+      final String avatarUrl = coachRow['avatar_url']?.toString().trim() ?? '';
+
+      setState(() {
+        _peerName = fullName.isNotEmpty ? fullName : 'Без имени';
+        _avatarUrl = avatarUrl;
+      });
+    } catch (error) {
+      debugPrint('CLIENT CHAT IDENTITY LOAD ERROR: clientId=$clientId error=$error');
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return CoachChatPage(
+      peerName: _peerName,
+      avatarUrl: _avatarUrl,
+    );
+  }
 }
 
 class _SplashRedirectPage extends StatefulWidget {
@@ -575,4 +651,3 @@ class _SplashRedirectPageState extends State<_SplashRedirectPage> {
     );
   }
 }
-
