@@ -659,10 +659,88 @@ begin
 end;
 $$;
 
+create or replace function public._behavior_normalize_task_activity_event()
+returns trigger
+language plpgsql
+set search_path = public, pg_temp
+as $$
+begin
+  new.event_source := lower(coalesce(nullif(btrim(coalesce(new.event_source, '')), ''), 'user'));
+  new.metadata := coalesce(new.metadata, '{}'::jsonb);
+
+  if new.event_type is not null then
+    new.event_type := lower(nullif(btrim(new.event_type), ''));
+  end if;
+
+  if new.event_type = 'completed' or coalesce(new.completed, false) then
+    new.event_type := 'completed';
+    new.completed := true;
+    new.skipped := false;
+    new.completed_at := coalesce(new.completed_at, now());
+  elsif new.event_type = 'skipped' or coalesce(new.skipped, false) then
+    new.event_type := 'skipped';
+    new.completed := false;
+    new.skipped := true;
+    new.completed_at := null;
+  elsif new.event_type = 'reopened' then
+    new.completed := false;
+    new.skipped := false;
+    new.completed_at := null;
+  else
+    new.completed := coalesce(new.completed, false);
+    new.skipped := coalesce(new.skipped, false);
+
+    if not new.completed and not new.skipped then
+      new.completed_at := null;
+    end if;
+  end if;
+
+  return new;
+end;
+$$;
+
+create or replace function public._behavior_rebuild_task_projection_core(p_task_id uuid)
+returns text
+language plpgsql
+set search_path = public, pg_temp
+as $$
+declare
+  v_latest_event_type text;
+begin
+  select
+    case
+      when ta.event_type is not null and ta.event_type <> '' then lower(ta.event_type)
+      when coalesce(ta.completed, false) then 'completed'
+      when coalesce(ta.skipped, false) then 'skipped'
+      else null
+    end
+  into v_latest_event_type
+  from public.task_activity ta
+  where ta.task_id = p_task_id
+  order by coalesce(ta.updated_at, ta.created_at) desc, ta.id desc
+  limit 1;
+
+  if v_latest_event_type is null then
+    return null;
+  end if;
+
+  if v_latest_event_type = 'completed' then
+    return 'done';
+  elsif v_latest_event_type = 'reopened' then
+    return 'in_progress';
+  else
+    return 'pending';
+  end if;
+end;
+$$;
+
 create table if not exists public.task_activity (
   id uuid primary key default gen_random_uuid(),
   user_id uuid references public.users(id) on delete cascade,
   task_id uuid,
+  event_type text,
+  event_source text default 'user',
+  metadata jsonb default '{}'::jsonb,
   completed boolean not null default false,
   skipped boolean not null default false,
   completed_at timestamp with time zone,
@@ -672,6 +750,9 @@ create table if not exists public.task_activity (
 
 alter table public.task_activity
   add column if not exists task_id uuid,
+  add column if not exists event_type text,
+  add column if not exists event_source text default 'user',
+  add column if not exists metadata jsonb default '{}'::jsonb,
   add column if not exists completed boolean not null default false,
   add column if not exists skipped boolean not null default false,
   add column if not exists completed_at timestamp with time zone,
@@ -679,8 +760,16 @@ alter table public.task_activity
   add column if not exists created_at timestamp with time zone default now();
 
 alter table public.task_activity
+  alter column event_source set default 'user',
+  alter column metadata set default '{}'::jsonb,
   alter column updated_at set default now(),
   alter column created_at set default now();
+
+drop trigger if exists task_activity_normalize_event on public.task_activity;
+
+create trigger task_activity_normalize_event
+before insert or update on public.task_activity
+for each row execute function public._behavior_normalize_task_activity_event();
 
 drop trigger if exists task_activity_touch_updated_at on public.task_activity;
 
@@ -691,6 +780,7 @@ for each row execute function public._behavior_touch_updated_at();
 create index if not exists idx_task_activity_user_id on public.task_activity(user_id);
 create index if not exists idx_task_activity_created_at on public.task_activity(created_at desc);
 create index if not exists idx_task_activity_completed_at on public.task_activity(completed_at desc);
+create index if not exists idx_task_activity_task_id_updated_at on public.task_activity(task_id, updated_at desc);
 
 alter table public.task_activity
   enable row level security;
@@ -714,6 +804,13 @@ for insert
 to authenticated
 with check (
   user_id = auth.uid()
+  and exists (
+    select 1
+    from public.plan_items pi
+    join public.plans p on p.id = pi.plan_id
+    where pi.id = task_id
+      and p.user_id = auth.uid()
+  )
 );
 
 drop policy if exists "task_activity_update_own_rows" on public.task_activity;
@@ -724,9 +821,23 @@ for update
 to authenticated
 using (
   user_id = auth.uid()
+  and exists (
+    select 1
+    from public.plan_items pi
+    join public.plans p on p.id = pi.plan_id
+    where pi.id = task_id
+      and p.user_id = auth.uid()
+  )
 )
 with check (
   user_id = auth.uid()
+  and exists (
+    select 1
+    from public.plan_items pi
+    join public.plans p on p.id = pi.plan_id
+    where pi.id = task_id
+      and p.user_id = auth.uid()
+  )
 );
 
 drop policy if exists "task_activity_delete_own_rows" on public.task_activity;
@@ -737,7 +848,115 @@ for delete
 to authenticated
 using (
   user_id = auth.uid()
+  and exists (
+    select 1
+    from public.plan_items pi
+    join public.plans p on p.id = pi.plan_id
+    where pi.id = task_id
+      and p.user_id = auth.uid()
+  )
 );
+
+create or replace function public.rebuild_task_projection(task_id uuid)
+returns void
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_owner_id uuid;
+  v_new_status text;
+begin
+  if auth.uid() is null then
+    raise exception 'Not authenticated' using errcode = '28000';
+  end if;
+
+  select p.user_id
+  into v_owner_id
+  from public.plan_items pi
+  join public.plans p on p.id = pi.plan_id
+  where pi.id = task_id
+  limit 1;
+
+  if v_owner_id is null then
+    raise exception 'Task not found' using errcode = 'P0002';
+  end if;
+
+  if v_owner_id <> auth.uid() then
+    raise exception 'Access denied for task projection rebuild' using errcode = '42501';
+  end if;
+
+  v_new_status := public._behavior_rebuild_task_projection_core(task_id);
+
+  if v_new_status is null then
+    return;
+  end if;
+
+  update public.plan_items
+  set status = v_new_status,
+      updated_at = now()
+  where id = task_id;
+end;
+$$;
+
+create or replace function public.record_task_event(
+  task_id uuid,
+  event_type text,
+  event_source text default 'user',
+  metadata jsonb default '{}'::jsonb
+)
+returns void
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_owner_id uuid;
+  v_event_type text := lower(nullif(btrim(coalesce(event_type, '')), ''));
+  v_event_source text := lower(coalesce(nullif(btrim(coalesce(event_source, '')), ''), 'user'));
+  v_metadata jsonb := coalesce(metadata, '{}'::jsonb);
+begin
+  if auth.uid() is null then
+    raise exception 'Not authenticated' using errcode = '28000';
+  end if;
+
+  if v_event_type is null or v_event_type not in ('completed', 'skipped', 'reopened') then
+    raise exception 'Unsupported task event type: %', event_type using errcode = '23514';
+  end if;
+
+  select p.user_id
+  into v_owner_id
+  from public.plan_items pi
+  join public.plans p on p.id = pi.plan_id
+  where pi.id = task_id
+  limit 1;
+
+  if v_owner_id is null then
+    raise exception 'Task not found' using errcode = 'P0002';
+  end if;
+
+  if v_owner_id <> auth.uid() then
+    raise exception 'Access denied for task event' using errcode = '42501';
+  end if;
+
+  insert into public.task_activity (
+    user_id,
+    task_id,
+    event_type,
+    event_source,
+    metadata
+  )
+  values (
+    auth.uid(),
+    task_id,
+    v_event_type,
+    v_event_source,
+    v_metadata
+  );
+
+  perform public.rebuild_task_projection(task_id);
+end;
+$$;
 
 create table if not exists public.food_logs (
   id uuid primary key default gen_random_uuid(),
@@ -1025,21 +1244,213 @@ using (
   )
 );
 
+alter table public.task_activity
+  drop constraint if exists task_activity_task_id_fkey;
+
+alter table public.task_activity
+  add constraint task_activity_task_id_fkey
+  foreign key (task_id) references public.plan_items(id) on delete cascade not valid;
+
+create table if not exists public.conversations (
+  id uuid primary key default gen_random_uuid(),
+  client_id uuid references public.users(id) on delete cascade,
+  coach_id uuid references public.users(id) on delete cascade,
+  last_message_at timestamp with time zone,
+  last_message_preview text,
+  last_message_sender_id uuid references public.users(id) on delete set null,
+  created_at timestamp with time zone default now(),
+  updated_at timestamp with time zone default now()
+);
+
+alter table public.conversations
+  add column if not exists last_message_at timestamp with time zone,
+  add column if not exists last_message_preview text,
+  add column if not exists last_message_sender_id uuid references public.users(id) on delete set null,
+  add column if not exists created_at timestamp with time zone default now(),
+  add column if not exists updated_at timestamp with time zone default now();
+
+alter table public.conversations
+  drop constraint if exists conversations_client_and_coach_different;
+
+alter table public.conversations
+  add constraint conversations_client_and_coach_different
+  check (client_id is null or coach_id is null or client_id <> coach_id);
+
+create unique index if not exists idx_conversations_client_coach on public.conversations(client_id, coach_id);
+create index if not exists idx_conversations_client_id on public.conversations(client_id);
+create index if not exists idx_conversations_coach_id on public.conversations(coach_id);
+create index if not exists idx_conversations_last_message_at on public.conversations(last_message_at desc);
+
+alter table public.conversations
+  enable row level security;
+
+drop policy if exists "conversations_select_participants" on public.conversations;
+
+create policy "conversations_select_participants"
+on public.conversations
+for select
+to authenticated
+using (
+  client_id = auth.uid()
+  or coach_id = auth.uid()
+);
+
+drop policy if exists "conversations_insert_participants" on public.conversations;
+
+create policy "conversations_insert_participants"
+on public.conversations
+for insert
+to authenticated
+with check (
+  (
+    auth.uid() = client_id
+    or auth.uid() = coach_id
+  )
+  and exists (
+    select 1
+    from public.clients c
+    where c.user_id = client_id
+      and c.coach_id = coach_id
+  )
+);
+
+create or replace function public._behavior_normalize_message_record()
+returns trigger
+language plpgsql
+set search_path = public, pg_temp
+as $$
+begin
+  new.message_type := lower(coalesce(nullif(btrim(coalesce(new.message_type, '')), ''), 'text'));
+  new.sender_role := lower(coalesce(nullif(btrim(coalesce(new.sender_role, '')), ''), 'client'));
+  new.metadata := coalesce(new.metadata, '{}'::jsonb);
+
+  if new.content is null or btrim(new.content) = '' then
+    new.content := nullif(btrim(coalesce(new.text, '')), '');
+  else
+    new.content := btrim(new.content);
+  end if;
+
+  if new.content is null then
+    raise exception 'Message content is required' using errcode = '23502';
+  end if;
+
+  new.text := new.content;
+
+  return new;
+end;
+$$;
+
+create or replace function public._behavior_sync_conversation_from_message()
+returns trigger
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_preview text;
+begin
+  v_preview := left(coalesce(nullif(btrim(new.content), ''), 'Сообщение'), 160);
+
+  update public.conversations
+  set last_message_at = coalesce(new.created_at, now()),
+      last_message_preview = v_preview,
+      last_message_sender_id = new.sender_id,
+      updated_at = now()
+  where id = new.conversation_id;
+
+  return new;
+end;
+$$;
+
+create or replace function public._behavior_is_conversation_participant(p_conversation_id uuid)
+returns boolean
+language sql
+stable
+security definer
+set search_path = public, pg_temp
+as $$
+  select exists (
+    select 1
+    from public.conversations c
+    where c.id = p_conversation_id
+      and (
+        c.client_id = auth.uid()
+        or c.coach_id = auth.uid()
+      )
+  );
+$$;
+
 create table if not exists public.messages (
   id uuid primary key default gen_random_uuid(),
-  sender_id uuid references public.users(id),
-  receiver_id uuid references public.users(id),
+  conversation_id uuid references public.conversations(id) on delete cascade,
+  sender_id uuid references public.users(id) on delete cascade,
+  receiver_id uuid references public.users(id) on delete cascade,
+  sender_role text default 'client',
+  message_type text default 'text',
+  content text,
+  metadata jsonb default '{}'::jsonb,
+  read_at timestamp with time zone,
+  edited_at timestamp with time zone,
+  deleted_at timestamp with time zone,
   text text,
   image_url text,
-  created_at timestamp default now()
+  created_at timestamp with time zone default now()
 );
 
 alter table public.messages
-  add column if not exists created_at timestamp default now();
+  add column if not exists conversation_id uuid,
+  add column if not exists sender_role text default 'client',
+  add column if not exists message_type text default 'text',
+  add column if not exists content text,
+  add column if not exists metadata jsonb default '{}'::jsonb,
+  add column if not exists read_at timestamp with time zone,
+  add column if not exists edited_at timestamp with time zone,
+  add column if not exists deleted_at timestamp with time zone,
+  add column if not exists text text,
+  add column if not exists image_url text,
+  add column if not exists created_at timestamp with time zone default now();
 
+alter table public.messages
+  drop constraint if exists messages_conversation_id_fkey;
+
+alter table public.messages
+  add constraint messages_conversation_id_fkey
+  foreign key (conversation_id) references public.conversations(id) on delete cascade;
+
+alter table public.messages
+  drop constraint if exists messages_message_type_check;
+
+alter table public.messages
+  add constraint messages_message_type_check
+  check (message_type in ('text', 'system', 'intervention', 'reflection_prompt', 'coach_note', 'checkin_followup'));
+
+alter table public.messages
+  drop constraint if exists messages_sender_role_check;
+
+alter table public.messages
+  add constraint messages_sender_role_check
+  check (sender_role in ('client', 'coach', 'system', 'ai'));
+
+update public.messages
+set content = coalesce(content, nullif(btrim(text), ''))
+where content is null and coalesce(text, '') <> '';
+
+update public.messages
+set text = coalesce(text, content)
+where coalesce(text, '') = '' and content is not null;
+
+update public.messages
+set message_type = coalesce(nullif(btrim(message_type), ''), 'text');
+
+update public.messages
+set sender_role = coalesce(nullif(btrim(sender_role), ''), 'client');
+
+create index if not exists idx_messages_conversation_id on public.messages(conversation_id);
+create index if not exists idx_messages_conversation_created_at on public.messages(conversation_id, created_at desc);
 create index if not exists idx_messages_sender_id on public.messages(sender_id);
 create index if not exists idx_messages_receiver_id on public.messages(receiver_id);
 create index if not exists idx_messages_created_at on public.messages(created_at desc);
+create index if not exists idx_messages_unread_receiver on public.messages(receiver_id, conversation_id, created_at desc) where read_at is null and deleted_at is null;
 
 alter table public.messages
   enable row level security;
@@ -1051,8 +1462,14 @@ on public.messages
 for select
 to authenticated
 using (
-  sender_id = auth.uid()
-  or receiver_id = auth.uid()
+  (
+    conversation_id is null
+    and (
+      sender_id = auth.uid()
+      or receiver_id = auth.uid()
+    )
+  )
+  or public._behavior_is_conversation_participant(conversation_id)
 );
 
 drop policy if exists "messages_insert_participants" on public.messages;
@@ -1062,8 +1479,17 @@ on public.messages
 for insert
 to authenticated
 with check (
-  sender_id = auth.uid()
-  or receiver_id = auth.uid()
+  conversation_id is not null
+  and sender_id = auth.uid()
+  and exists (
+    select 1
+    from public.conversations c
+    where c.id = conversation_id
+      and (
+        (auth.uid() = c.client_id and receiver_id = c.coach_id)
+        or (auth.uid() = c.coach_id and receiver_id = c.client_id)
+      )
+  )
 );
 
 drop policy if exists "messages_update_participants" on public.messages;
@@ -1073,12 +1499,20 @@ on public.messages
 for update
 to authenticated
 using (
-  sender_id = auth.uid()
-  or receiver_id = auth.uid()
+  conversation_id is not null
+  and (
+    sender_id = auth.uid()
+    or receiver_id = auth.uid()
+  )
+  and public._behavior_is_conversation_participant(conversation_id)
 )
 with check (
-  sender_id = auth.uid()
-  or receiver_id = auth.uid()
+  conversation_id is not null
+  and (
+    sender_id = auth.uid()
+    or receiver_id = auth.uid()
+  )
+  and public._behavior_is_conversation_participant(conversation_id)
 );
 
 drop policy if exists "messages_delete_participants" on public.messages;
@@ -1088,9 +1522,329 @@ on public.messages
 for delete
 to authenticated
 using (
-  sender_id = auth.uid()
-  or receiver_id = auth.uid()
+  conversation_id is not null
+  and sender_id = auth.uid()
+  and public._behavior_is_conversation_participant(conversation_id)
 );
+
+do $$
+begin
+  if exists (select 1 from pg_publication where pubname = 'supabase_realtime') then
+    begin
+      alter publication supabase_realtime add table public.conversations;
+    exception when duplicate_object then
+      null;
+    end;
+
+    begin
+      alter publication supabase_realtime add table public.messages;
+    exception when duplicate_object then
+      null;
+    end;
+  end if;
+end;
+$$;
+
+drop trigger if exists messages_normalize_record on public.messages;
+
+create trigger messages_normalize_record
+before insert or update on public.messages
+for each row execute function public._behavior_normalize_message_record();
+
+drop trigger if exists messages_sync_conversation on public.messages;
+
+create trigger messages_sync_conversation
+after insert on public.messages
+for each row execute function public._behavior_sync_conversation_from_message();
+
+create or replace function public._behavior_guard_message_update()
+returns trigger
+language plpgsql
+set search_path = public, pg_temp
+as $$
+begin
+  if auth.uid() = old.sender_id then
+    if new.id is distinct from old.id
+       or new.conversation_id is distinct from old.conversation_id
+       or new.sender_id is distinct from old.sender_id
+       or new.receiver_id is distinct from old.receiver_id
+       or new.sender_role is distinct from old.sender_role
+       or new.message_type is distinct from old.message_type
+       or new.created_at is distinct from old.created_at
+       or new.read_at is distinct from old.read_at then
+      raise exception 'Sender may only edit message content' using errcode = '42501';
+    end if;
+
+    return new;
+  end if;
+
+  if auth.uid() = old.receiver_id then
+    if new.id is distinct from old.id
+       or new.conversation_id is distinct from old.conversation_id
+       or new.sender_id is distinct from old.sender_id
+       or new.receiver_id is distinct from old.receiver_id
+       or new.sender_role is distinct from old.sender_role
+       or new.message_type is distinct from old.message_type
+       or coalesce(new.content, '') is distinct from coalesce(old.content, '')
+       or coalesce(new.text, '') is distinct from coalesce(old.text, '')
+       or coalesce(new.metadata, '{}'::jsonb) is distinct from coalesce(old.metadata, '{}'::jsonb)
+       or new.edited_at is distinct from old.edited_at
+       or new.deleted_at is distinct from old.deleted_at
+       or new.created_at is distinct from old.created_at then
+      raise exception 'Receiver may only update read state' using errcode = '42501';
+    end if;
+
+    return new;
+  end if;
+
+  raise exception 'Access denied for message update' using errcode = '42501';
+end;
+$$;
+
+drop trigger if exists messages_guard_update on public.messages;
+
+create trigger messages_guard_update
+after update on public.messages
+for each row execute function public._behavior_guard_message_update();
+
+create or replace function public.get_or_create_direct_conversation(p_peer_user_id uuid)
+returns public.conversations
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_current_user_id uuid := auth.uid();
+  v_current_role text;
+  v_client_id uuid;
+  v_coach_id uuid;
+  v_conversation public.conversations%rowtype;
+begin
+  if v_current_user_id is null then
+    raise exception 'Not authenticated' using errcode = '28000';
+  end if;
+
+  if p_peer_user_id is null then
+    raise exception 'Peer user is required' using errcode = '22004';
+  end if;
+
+  select lower(coalesce(role, 'client'))
+  into v_current_role
+  from public.users
+  where id = v_current_user_id;
+
+  if v_current_role not in ('client', 'coach') then
+    raise exception 'Unsupported role for direct conversation' using errcode = '42501';
+  end if;
+
+  if v_current_role = 'coach' then
+    v_client_id := p_peer_user_id;
+    v_coach_id := v_current_user_id;
+  else
+    v_client_id := v_current_user_id;
+    v_coach_id := p_peer_user_id;
+  end if;
+
+  if v_client_id = v_coach_id then
+    raise exception 'Conversation participants must differ' using errcode = '23514';
+  end if;
+
+  if not exists (
+    select 1
+    from public.clients c
+    where c.user_id = v_client_id
+      and c.coach_id = v_coach_id
+  ) then
+    raise exception 'Conversation participants are not linked' using errcode = '42501';
+  end if;
+
+  select *
+  into v_conversation
+  from public.conversations
+  where client_id = v_client_id
+    and coach_id = v_coach_id
+  limit 1;
+
+  if v_conversation.id is null then
+    insert into public.conversations (client_id, coach_id)
+    values (v_client_id, v_coach_id)
+    returning * into v_conversation;
+  end if;
+
+  return v_conversation;
+end;
+$$;
+
+create or replace function public.send_chat_message(
+  p_conversation_id uuid,
+  p_content text,
+  p_message_type text default 'text',
+  p_metadata jsonb default '{}'::jsonb
+)
+returns public.messages
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_current_user_id uuid := auth.uid();
+  v_conversation public.conversations%rowtype;
+  v_sender_role text;
+  v_receiver_id uuid;
+  v_message public.messages%rowtype;
+  v_message_type text := lower(nullif(btrim(coalesce(p_message_type, '')), ''));
+begin
+  if v_current_user_id is null then
+    raise exception 'Not authenticated' using errcode = '28000';
+  end if;
+
+  if p_conversation_id is null then
+    raise exception 'Conversation is required' using errcode = '22004';
+  end if;
+
+  if v_message_type is null then
+    v_message_type := 'text';
+  end if;
+
+  if v_message_type not in ('text', 'system', 'intervention', 'reflection_prompt', 'coach_note', 'checkin_followup') then
+    raise exception 'Unsupported message type: %', p_message_type using errcode = '23514';
+  end if;
+
+  select *
+  into v_conversation
+  from public.conversations
+  where id = p_conversation_id
+  limit 1;
+
+  if v_conversation.id is null then
+    raise exception 'Conversation not found' using errcode = 'P0002';
+  end if;
+
+  if v_current_user_id <> v_conversation.client_id
+     and v_current_user_id <> v_conversation.coach_id then
+    raise exception 'Access denied for conversation' using errcode = '42501';
+  end if;
+
+  select lower(coalesce(role, 'client'))
+  into v_sender_role
+  from public.users
+  where id = v_current_user_id;
+
+  if v_sender_role not in ('client', 'coach') then
+    v_sender_role := 'client';
+  end if;
+
+  if nullif(btrim(coalesce(p_content, '')), '') is null then
+    raise exception 'Message content is required' using errcode = '23502';
+  end if;
+
+  v_receiver_id := case
+    when v_current_user_id = v_conversation.client_id then v_conversation.coach_id
+    else v_conversation.client_id
+  end;
+
+  insert into public.messages (
+    conversation_id,
+    sender_id,
+    receiver_id,
+    sender_role,
+    message_type,
+    content,
+    text,
+    metadata
+  )
+  values (
+    p_conversation_id,
+    v_current_user_id,
+    v_receiver_id,
+    v_sender_role,
+    v_message_type,
+    btrim(p_content),
+    btrim(p_content),
+    coalesce(p_metadata, '{}'::jsonb)
+  )
+  returning * into v_message;
+
+  return v_message;
+end;
+$$;
+
+create or replace function public.mark_conversation_messages_read(p_conversation_id uuid)
+returns integer
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_current_user_id uuid := auth.uid();
+  v_rows int := 0;
+begin
+  if v_current_user_id is null then
+    raise exception 'Not authenticated' using errcode = '28000';
+  end if;
+
+  if p_conversation_id is null then
+    return 0;
+  end if;
+
+  if not public._behavior_is_conversation_participant(p_conversation_id) then
+    raise exception 'Access denied for conversation' using errcode = '42501';
+  end if;
+
+  update public.messages
+  set read_at = coalesce(read_at, now())
+  where conversation_id = p_conversation_id
+    and receiver_id = v_current_user_id
+    and read_at is null
+    and deleted_at is null;
+
+  get diagnostics v_rows = row_count;
+  return v_rows;
+end;
+$$;
+
+create or replace function public.get_conversation_unread_count(p_conversation_id uuid)
+returns bigint
+language sql
+stable
+security definer
+set search_path = public, pg_temp
+as $$
+  select count(*)::bigint
+  from public.messages m
+  join public.conversations c on c.id = m.conversation_id
+  where m.conversation_id = p_conversation_id
+    and m.read_at is null
+    and m.deleted_at is null
+    and (
+      c.client_id = auth.uid()
+      or c.coach_id = auth.uid()
+    );
+$$;
+
+create or replace function public.list_my_conversation_unread_counts()
+returns table (
+  conversation_id uuid,
+  unread_count bigint
+)
+language sql
+stable
+security definer
+set search_path = public, pg_temp
+as $$
+  select
+    m.conversation_id,
+    count(*)::bigint as unread_count
+  from public.messages m
+  join public.conversations c on c.id = m.conversation_id
+  where m.read_at is null
+    and m.deleted_at is null
+    and (
+      c.client_id = auth.uid()
+      or c.coach_id = auth.uid()
+    )
+  group by m.conversation_id;
+$$;
 
 -- Backfill for already existing auth users.
 insert into public.users (id, email, role)

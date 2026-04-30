@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
@@ -68,44 +69,130 @@ class PlanItemDetailsPage extends StatefulWidget {
 class _PlanItemDetailsPageState extends State<PlanItemDetailsPage> {
   final SupabaseClient _client = Supabase.instance.client;
   bool _isUpdating = false;
+  String? _pendingEventType;
 
-  Future<void> _updateStatus(String status) async {
+  static const String _appVersion = String.fromEnvironment(
+    'APP_VERSION',
+    defaultValue: '0.1.0+1',
+  );
+
+  String _platformLabel() {
+    if (kIsWeb) {
+      return 'web';
+    }
+
+    switch (defaultTargetPlatform) {
+      case TargetPlatform.android:
+        return 'android';
+      case TargetPlatform.iOS:
+        return 'ios';
+      case TargetPlatform.macOS:
+        return 'macos';
+      case TargetPlatform.windows:
+        return 'windows';
+      case TargetPlatform.linux:
+        return 'linux';
+      case TargetPlatform.fuchsia:
+        return 'fuchsia';
+    }
+  }
+
+  Map<String, dynamic> _buildTaskEventMetadata({required String trigger}) {
+    return <String, dynamic>{
+      'source_screen': 'plan_item_details_page',
+      'platform': _platformLabel(),
+      'app_version': _appVersion,
+      'trigger': trigger,
+    };
+  }
+
+  Widget _buildButtonChild(String eventType, String label) {
+    if (_pendingEventType == eventType) {
+      return const SizedBox(
+        width: 18,
+        height: 18,
+        child: CircularProgressIndicator(strokeWidth: 2),
+      );
+    }
+
+    return Text(label);
+  }
+
+  Future<PlanItemData?> _reloadProjectedItem() async {
+    try {
+      final Map<String, dynamic>? row = await _client
+          .from('plan_items')
+          .select('id, plan_id, title, description, status, created_at')
+          .eq('id', widget.item.id)
+          .maybeSingle();
+
+      if (row == null) {
+        return null;
+      }
+
+      return PlanItemData.fromMap(row);
+    } catch (error) {
+      debugPrint('TASK EVENT REFRESH WARNING: item_id=${widget.item.id}, error=$error');
+      return null;
+    }
+  }
+
+  Future<void> _submitTaskEvent(
+    String eventType, {
+    required String trigger,
+    required String successMessage,
+  }) async {
     if (_isUpdating) {
       return;
     }
 
-    debugPrint('PLAN UPDATE START: item_id=${widget.item.id}, status=$status');
+    debugPrint('TASK EVENT START: item_id=${widget.item.id}, event_type=$eventType');
 
     setState(() {
       _isUpdating = true;
+      _pendingEventType = eventType;
     });
 
     try {
-      await _client.from('plan_items').update(<String, dynamic>{
-        'status': status,
-      }).eq('id', widget.item.id);
+      await _client.rpc(
+        'record_task_event',
+        params: <String, dynamic>{
+          'task_id': widget.item.id,
+          'event_type': eventType,
+          'event_source': 'user',
+          'metadata': _buildTaskEventMetadata(trigger: trigger),
+        },
+      );
 
-      debugPrint('PLAN UPDATE SUCCESS: item_id=${widget.item.id}, status=$status');
+      final PlanItemData? refreshedItem = await _reloadProjectedItem();
+      if (refreshedItem != null) {
+        debugPrint(
+          'TASK EVENT REFRESH SUCCESS: item_id=${widget.item.id}, status=${refreshedItem.status}',
+        );
+      }
+
+      debugPrint('TASK EVENT SUCCESS: item_id=${widget.item.id}, event_type=$eventType');
 
       if (!mounted) {
         return;
       }
 
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Статус сохранён')),
+        SnackBar(content: Text(successMessage)),
       );
       Navigator.of(context).pop(true);
     } catch (error) {
-      debugPrint('PLAN UPDATE ERROR: item_id=${widget.item.id}, status=$status, error=$error');
+      debugPrint('TASK EVENT ERROR: item_id=${widget.item.id}, event_type=$eventType, error=$error');
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Не удалось обновить статус')),
+          const SnackBar(content: Text('Не удалось сохранить действие')),
         );
       }
     } finally {
       if (mounted) {
         setState(() {
           _isUpdating = false;
+          _pendingEventType = null;
         });
       }
     }
@@ -139,6 +226,7 @@ class _PlanItemDetailsPageState extends State<PlanItemDetailsPage> {
     final ColorScheme colors = theme.colorScheme;
     final PlanItemData item = widget.item;
     final String normalizedStatus = item.normalizedStatus;
+    final bool isCompleted = normalizedStatus == 'done';
 
     return Scaffold(
       appBar: AppBar(
@@ -201,20 +289,42 @@ class _PlanItemDetailsPageState extends State<PlanItemDetailsPage> {
               ),
               const SizedBox(height: 20),
               ElevatedButton(
-                onPressed: _isUpdating ? null : () => _updateStatus('in_progress'),
-                child: _isUpdating
-                    ? const SizedBox(
-                        width: 18,
-                        height: 18,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    : const Text('В работу'),
+                onPressed: _isUpdating
+                    ? null
+                    : () => _submitTaskEvent(
+                          'reopened',
+                          trigger: isCompleted ? 'reopen_button' : 'start_work_button',
+                          successMessage: isCompleted ? 'Шаг снова в работе' : 'Шаг отправлен в работу',
+                        ),
+                child: _buildButtonChild(
+                  'reopened',
+                  isCompleted ? 'Снова в работу' : 'В работу',
+                ),
               ),
-              const SizedBox(height: 12),
-              OutlinedButton(
-                onPressed: _isUpdating ? null : () => _updateStatus('done'),
-                child: const Text('Шаг выполнен'),
-              ),
+              if (!isCompleted) ...<Widget>[
+                const SizedBox(height: 12),
+                OutlinedButton(
+                  onPressed: _isUpdating
+                      ? null
+                      : () => _submitTaskEvent(
+                            'completed',
+                            trigger: 'completed_button',
+                            successMessage: 'Шаг отмечен как выполненный',
+                          ),
+                  child: _buildButtonChild('completed', 'Шаг выполнен'),
+                ),
+                const SizedBox(height: 12),
+                TextButton(
+                  onPressed: _isUpdating
+                      ? null
+                      : () => _submitTaskEvent(
+                            'skipped',
+                            trigger: 'skip_button',
+                            successMessage: 'Шаг пропущен',
+                          ),
+                  child: _buildButtonChild('skipped', 'Пропустить'),
+                ),
+              ],
             ],
           ),
         ),

@@ -384,6 +384,7 @@ class AppRouter {
       builder: (_) => CoachChatPage(
         peerName: peerName,
         avatarUrl: peerAvatarUrl,
+        peerUserId: args?.clientId ?? '',
         behaviorUserId: args?.clientId ?? '',
       ),
     );
@@ -457,6 +458,7 @@ class _ResolvedClientChatPage extends StatefulWidget {
 class _ResolvedClientChatPageState extends State<_ResolvedClientChatPage> {
   String _peerName = 'Без имени';
   String _avatarUrl = '';
+  String _peerUserId = '';
 
   @override
   void initState() {
@@ -500,6 +502,7 @@ class _ResolvedClientChatPageState extends State<_ResolvedClientChatPage> {
       setState(() {
         _peerName = fullName.isNotEmpty ? fullName : 'Без имени';
         _avatarUrl = avatarUrl;
+        _peerUserId = coachId;
       });
     } catch (error) {
       debugPrint('CLIENT CHAT IDENTITY LOAD ERROR: clientId=$clientId error=$error');
@@ -511,6 +514,7 @@ class _ResolvedClientChatPageState extends State<_ResolvedClientChatPage> {
     return CoachChatPage(
       peerName: _peerName,
       avatarUrl: _avatarUrl,
+      peerUserId: _peerUserId,
       behaviorUserId: widget.clientId,
     );
   }

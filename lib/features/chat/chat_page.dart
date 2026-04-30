@@ -1,3 +1,6 @@
+import 'dart:async';
+
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
@@ -9,12 +12,14 @@ class CoachChatPage extends StatefulWidget {
     super.key,
     required this.peerName,
     required this.avatarUrl,
+    required this.peerUserId,
     required this.behaviorUserId,
     this.onlineLabel = 'В сети',
   });
 
   final String peerName;
   final String avatarUrl;
+  final String peerUserId;
   final String behaviorUserId;
   final String onlineLabel;
 
@@ -23,58 +28,60 @@ class CoachChatPage extends StatefulWidget {
 }
 
 class _CoachChatPageState extends State<CoachChatPage> {
+  static const String _appVersion = String.fromEnvironment(
+    'APP_VERSION',
+    defaultValue: '0.1.0+1',
+  );
+
   final SupabaseClient _client = Supabase.instance.client;
   final TextEditingController _messageController = TextEditingController();
   final ScrollController _scrollController = ScrollController();
 
+  RealtimeChannel? _messagesChannel;
+  Timer? _refreshDebounce;
+
+  bool _isBootstrapping = true;
   bool _isBehaviorLoading = true;
+  bool _isLoadingMessages = false;
+  bool _isSendingMessage = false;
+  bool _isMarkingRead = false;
+
+  int _bootstrapToken = 0;
+  bool _reloadRequestedWhileLoading = false;
+
+  String? _currentUserId;
+  String? _conversationId;
+  String? _conversationError;
+
   String _behaviorStatus = '';
   int? _consistencyStreak;
   DateTime? _lastCheckInAt;
 
-  late final List<_ChatMessage> _messages = <_ChatMessage>[
-    const _ChatMessage(
-      text:
-          'Доброе утро! Посмотрел ваш фотодневник за вчера. Отличный выбор белков на ужин.',
-      time: '09:15',
-      isSent: false,
-    ),
-    const _ChatMessage(
-      text: 'Как ваше самочувствие сегодня? Удалось выспаться?',
-      time: '09:16',
-      isSent: false,
-    ),
-    const _ChatMessage(
-      text:
-          'Доброе утро! Да, легла пораньше, чувствую себя бодрее. Вот мой завтрак сегодня:',
-      time: '09:45',
-      isSent: true,
-      imageUrl:
-          'https://dimg.dreamflow.cloud/v1/image/healthy+breakfast+bowl+with+avocado+and+eggs',
-    ),
-    const _ChatMessage(
-      text:
-          'Завтрак выглядит сбалансированным. Добавьте чуть больше зелени, если есть возможность. Это поможет с чувством сытости до обеда.',
-      time: '10:05',
-      isSent: false,
-    ),
-    const _ChatMessage(
-      text: 'Поняла, спасибо! Сейчас как раз иду в магазин, куплю шпинат.',
-      time: '10:12',
-      isSent: true,
-    ),
-  ];
+  _ConversationData? _conversation;
+  List<_ChatMessageRecord> _messages = <_ChatMessageRecord>[];
 
   @override
   void initState() {
     super.initState();
-    _loadBehaviorContext();
+    unawaited(_bootstrap());
+  }
+
+  @override
+  void didUpdateWidget(covariant CoachChatPage oldWidget) {
+    super.didUpdateWidget(oldWidget);
+
+    if (oldWidget.peerUserId.trim() != widget.peerUserId.trim() ||
+        oldWidget.behaviorUserId.trim() != widget.behaviorUserId.trim()) {
+      unawaited(_bootstrap());
+    }
   }
 
   @override
   void dispose() {
     _messageController.dispose();
     _scrollController.dispose();
+    _refreshDebounce?.cancel();
+    unawaited(_disposeRealtimeChannel());
     super.dispose();
   }
 
@@ -116,6 +123,53 @@ class _CoachChatPageState extends State<CoachChatPage> {
     return DateTime.tryParse(text);
   }
 
+  Map<String, dynamic>? _singleRowFromRpc(dynamic result) {
+    if (result is Map<String, dynamic>) {
+      return result;
+    }
+
+    if (result is List<dynamic> && result.isNotEmpty) {
+      final Object? first = result.first;
+      if (first is Map<String, dynamic>) {
+        return first;
+      }
+      if (first is Map) {
+        return first.map((Object? key, Object? value) {
+          return MapEntry(key?.toString() ?? '', value);
+        });
+      }
+    }
+
+    return null;
+  }
+
+  String _platformLabel() {
+    if (kIsWeb) {
+      return 'web';
+    }
+
+    switch (defaultTargetPlatform) {
+      case TargetPlatform.android:
+        return 'android';
+      case TargetPlatform.iOS:
+        return 'ios';
+      case TargetPlatform.macOS:
+        return 'macos';
+      case TargetPlatform.windows:
+        return 'windows';
+      case TargetPlatform.linux:
+        return 'linux';
+      case TargetPlatform.fuchsia:
+        return 'fuchsia';
+    }
+  }
+
+  String _formatTime(DateTime value) {
+    final String hour = value.hour.toString().padLeft(2, '0');
+    final String minute = value.minute.toString().padLeft(2, '0');
+    return '$hour:$minute';
+  }
+
   String _relativeDayLabel(DateTime value) {
     final DateTime today = DateUtils.dateOnly(DateTime.now());
     final DateTime day = DateUtils.dateOnly(value);
@@ -146,10 +200,107 @@ class _CoachChatPageState extends State<CoachChatPage> {
     }
   }
 
-  Future<void> _loadBehaviorContext() async {
+  Map<String, dynamic> _messageMetadata({required String trigger}) {
+    return <String, dynamic>{
+      'source_screen': 'chat_page',
+      'platform': _platformLabel(),
+      'app_version': _appVersion,
+      'trigger': trigger,
+      'conversation_id': _conversationId,
+      'peer_user_id': widget.peerUserId.trim(),
+      'behavior_user_id': widget.behaviorUserId.trim(),
+    };
+  }
+
+  String _messageTypeLabel(String messageType) {
+    switch (messageType) {
+      case 'system':
+        return 'Система';
+      case 'intervention':
+        return 'Интервенция';
+      case 'reflection_prompt':
+        return 'Вопрос для рефлексии';
+      case 'coach_note':
+        return 'Заметка коуча';
+      case 'checkin_followup':
+        return 'Фоллоу-ап';
+      default:
+        return '';
+    }
+  }
+
+  bool _isCurrentUserMessage(_ChatMessageRecord message) {
+    return _currentUserId != null && message.senderId == _currentUserId;
+  }
+
+  Future<void> _bootstrap() async {
+    final int bootstrapToken = ++_bootstrapToken;
+    _currentUserId = _client.auth.currentUser?.id;
+
+    if (mounted) {
+      setState(() {
+        _isBootstrapping = true;
+        _conversationError = null;
+        _conversation = null;
+        _conversationId = null;
+        _messages = <_ChatMessageRecord>[];
+        _isLoadingMessages = false;
+        _reloadRequestedWhileLoading = false;
+      });
+    }
+
+    await _disposeRealtimeChannel();
+
+    final String peerUserId = widget.peerUserId.trim();
     final String behaviorUserId = widget.behaviorUserId.trim();
+
+    if (_currentUserId == null) {
+      if (!mounted || bootstrapToken != _bootstrapToken) {
+        return;
+      }
+
+      setState(() {
+        _isBootstrapping = false;
+        _conversationError = 'Чат доступен после входа в систему';
+      });
+      return;
+    }
+
+    if (peerUserId.isEmpty) {
+      if (!mounted || bootstrapToken != _bootstrapToken) {
+        return;
+      }
+
+      setState(() {
+        _isBootstrapping = true;
+      });
+      return;
+    }
+
+    try {
+      await Future.wait(<Future<void>>[
+        _loadBehaviorContext(behaviorUserId, bootstrapToken),
+        _loadConversationAndMessages(peerUserId, bootstrapToken),
+      ]);
+    } catch (error) {
+      debugPrint('CHAT BOOTSTRAP ERROR: peerUserId=$peerUserId error=$error');
+      if (mounted && bootstrapToken == _bootstrapToken) {
+        setState(() {
+          _conversationError = 'Чат пока недоступен';
+        });
+      }
+    } finally {
+      if (mounted && bootstrapToken == _bootstrapToken) {
+        setState(() {
+          _isBootstrapping = false;
+        });
+      }
+    }
+  }
+
+  Future<void> _loadBehaviorContext(String behaviorUserId, int bootstrapToken) async {
     if (behaviorUserId.isEmpty) {
-      if (!mounted) {
+      if (!mounted || bootstrapToken != _bootstrapToken) {
         return;
       }
 
@@ -182,12 +333,12 @@ class _CoachChatPageState extends State<CoachChatPage> {
         checkInFuture,
       ]);
 
-      final Map<String, dynamic>? userRow = results[0] as Map<String, dynamic>?;
-      final Map<String, dynamic>? checkInRow = results[1] as Map<String, dynamic>?;
-
-      if (!mounted) {
+      if (!mounted || bootstrapToken != _bootstrapToken) {
         return;
       }
+
+      final Map<String, dynamic>? userRow = results[0] as Map<String, dynamic>?;
+      final Map<String, dynamic>? checkInRow = results[1] as Map<String, dynamic>?;
 
       setState(() {
         _isBehaviorLoading = false;
@@ -197,7 +348,7 @@ class _CoachChatPageState extends State<CoachChatPage> {
       });
     } catch (error) {
       debugPrint('CHAT BEHAVIOR CONTEXT LOAD ERROR: behaviorUserId=$behaviorUserId error=$error');
-      if (!mounted) {
+      if (!mounted || bootstrapToken != _bootstrapToken) {
         return;
       }
 
@@ -208,6 +359,275 @@ class _CoachChatPageState extends State<CoachChatPage> {
         _lastCheckInAt = null;
       });
     }
+  }
+
+  Future<_ConversationData> _resolveConversation(String peerUserId) async {
+    final dynamic result = await _client.rpc(
+      'get_or_create_direct_conversation',
+      params: <String, dynamic>{'p_peer_user_id': peerUserId},
+    );
+
+    final Map<String, dynamic>? row = _singleRowFromRpc(result);
+    if (row == null) {
+      throw StateError('Conversation RPC returned no data');
+    }
+
+    return _ConversationData.fromMap(row);
+  }
+
+  Future<void> _loadConversationAndMessages(String peerUserId, int bootstrapToken) async {
+    final _ConversationData conversation = await _resolveConversation(peerUserId);
+
+    if (!mounted || bootstrapToken != _bootstrapToken) {
+      return;
+    }
+
+    setState(() {
+      _conversation = conversation;
+      _conversationId = conversation.id;
+      _conversationError = null;
+    });
+
+    await _loadMessages(conversation.id, bootstrapToken, markReadAfterLoad: false);
+    await _subscribeToConversation(conversation.id, bootstrapToken);
+    await _markConversationMessagesRead();
+  }
+
+  Future<void> _loadMessages(
+    String conversationId,
+    int bootstrapToken, {
+    required bool markReadAfterLoad,
+  }) async {
+    if (_isLoadingMessages) {
+      _reloadRequestedWhileLoading = true;
+      return;
+    }
+
+    _isLoadingMessages = true;
+
+    try {
+      final List<dynamic> rows = await _client
+          .from('messages')
+          .select(
+            'id, conversation_id, sender_id, receiver_id, sender_role, message_type, content, metadata, read_at, edited_at, deleted_at, image_url, created_at',
+          )
+          .eq('conversation_id', conversationId)
+          .isFilter('deleted_at', null)
+          .order('created_at', ascending: true);
+
+      if (!mounted || bootstrapToken != _bootstrapToken) {
+        return;
+      }
+
+      final List<_ChatMessageRecord> nextMessages = rows
+          .map((dynamic row) => _ChatMessageRecord.fromMap(row as Map<String, dynamic>))
+          .toList(growable: false);
+
+      setState(() {
+        _messages = nextMessages;
+        _conversationError = null;
+      });
+
+      _scrollToBottom();
+
+      if (markReadAfterLoad) {
+        unawaited(_markConversationMessagesRead());
+      }
+    } catch (error) {
+      debugPrint('CHAT MESSAGES LOAD ERROR: conversationId=$conversationId error=$error');
+      if (mounted && bootstrapToken == _bootstrapToken) {
+        setState(() {
+          _conversationError = 'Не удалось загрузить переписку';
+        });
+      }
+    } finally {
+      _isLoadingMessages = false;
+
+      if (_reloadRequestedWhileLoading && mounted && bootstrapToken == _bootstrapToken) {
+        _reloadRequestedWhileLoading = false;
+        unawaited(_loadMessages(conversationId, bootstrapToken, markReadAfterLoad: markReadAfterLoad));
+      }
+    }
+  }
+
+  Future<void> _subscribeToConversation(String conversationId, int bootstrapToken) async {
+    await _disposeRealtimeChannel();
+
+    if (!mounted || bootstrapToken != _bootstrapToken) {
+      return;
+    }
+
+    final RealtimeChannel channel = _client.channel('chat-conversation-$conversationId');
+    channel.onPostgresChanges(
+      event: PostgresChangeEvent.all,
+      schema: 'public',
+      table: 'messages',
+      filter: PostgresChangeFilter(
+        type: PostgresChangeFilterType.eq,
+        column: 'conversation_id',
+        value: conversationId,
+      ),
+      callback: (payload) {
+        debugPrint(
+          'CHAT REALTIME EVENT: conversationId=$conversationId eventType=${payload.eventType}',
+        );
+        _scheduleRefresh(markReadAfterLoad: true);
+      },
+    );
+
+    channel.subscribe((status, error) {
+      if (error != null) {
+        debugPrint('CHAT REALTIME SUBSCRIBE ERROR: conversationId=$conversationId error=$error');
+      }
+
+      if (status == RealtimeSubscribeStatus.subscribed) {
+        debugPrint('CHAT REALTIME SUBSCRIBED: conversationId=$conversationId');
+      }
+    });
+
+    _messagesChannel = channel;
+  }
+
+  Future<void> _disposeRealtimeChannel() async {
+    final RealtimeChannel? channel = _messagesChannel;
+    _messagesChannel = null;
+
+    if (channel == null) {
+      return;
+    }
+
+    try {
+      await channel.unsubscribe();
+    } catch (error) {
+      debugPrint('CHAT REALTIME UNSUBSCRIBE ERROR: $error');
+    }
+
+    try {
+      await _client.removeChannel(channel);
+    } catch (error) {
+      debugPrint('CHAT REALTIME REMOVE CHANNEL ERROR: $error');
+    }
+  }
+
+  void _scheduleRefresh({required bool markReadAfterLoad}) {
+    final String? conversationId = _conversationId;
+    if (conversationId == null || conversationId.isEmpty) {
+      return;
+    }
+
+    _refreshDebounce?.cancel();
+    _refreshDebounce = Timer(const Duration(milliseconds: 120), () {
+      if (!mounted) {
+        return;
+      }
+
+      unawaited(_loadMessages(conversationId, _bootstrapToken, markReadAfterLoad: markReadAfterLoad));
+    });
+  }
+
+  Future<void> _markConversationMessagesRead() async {
+    final String? conversationId = _conversationId;
+    if (conversationId == null || conversationId.isEmpty || _isMarkingRead) {
+      return;
+    }
+
+    _isMarkingRead = true;
+
+    try {
+      await _client.rpc(
+        'mark_conversation_messages_read',
+        params: <String, dynamic>{'p_conversation_id': conversationId},
+      );
+    } catch (error) {
+      debugPrint('CHAT MARK READ ERROR: conversationId=$conversationId error=$error');
+    } finally {
+      _isMarkingRead = false;
+    }
+  }
+
+  Future<void> _sendMessage() async {
+    final String content = _messageController.text.trim();
+    final String? conversationId = _conversationId;
+
+    if (content.isEmpty || conversationId == null || conversationId.isEmpty || _isSendingMessage) {
+      return;
+    }
+
+    final String draft = _messageController.text;
+    setState(() {
+      _isSendingMessage = true;
+    });
+
+    _messageController.clear();
+
+    try {
+      final dynamic result = await _client.rpc(
+        'send_chat_message',
+        params: <String, dynamic>{
+          'p_conversation_id': conversationId,
+          'p_content': content,
+          'p_message_type': 'text',
+          'p_metadata': _messageMetadata(trigger: 'composer_send'),
+        },
+      );
+
+      final Map<String, dynamic>? row = _singleRowFromRpc(result);
+      if (row != null) {
+        final _ChatMessageRecord sentMessage = _ChatMessageRecord.fromMap(row);
+        if (mounted) {
+          setState(() {
+            _messages = <_ChatMessageRecord>[..._messages, sentMessage];
+          });
+          _scrollToBottom();
+        }
+      } else {
+        unawaited(_loadMessages(conversationId, _bootstrapToken, markReadAfterLoad: false));
+      }
+    } catch (error) {
+      debugPrint('CHAT SEND ERROR: conversationId=$conversationId error=$error');
+      if (mounted) {
+        _messageController.text = draft;
+        _messageController.selection = TextSelection.fromPosition(
+          TextPosition(offset: draft.length),
+        );
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Не удалось отправить сообщение')),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isSendingMessage = false;
+        });
+      }
+    }
+  }
+
+  void _insertQuickText(String text) {
+    _messageController.text = text;
+    _messageController.selection = TextSelection.fromPosition(
+      TextPosition(offset: _messageController.text.length),
+    );
+  }
+
+  void _showAttachmentPlaceholder() {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Вложения подключим следующим этапом')),
+    );
+  }
+
+  void _scrollToBottom() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!_scrollController.hasClients) {
+        return;
+      }
+
+      _scrollController.animateTo(
+        _scrollController.position.maxScrollExtent,
+        duration: const Duration(milliseconds: 220),
+        curve: Curves.easeOut,
+      );
+    });
   }
 
   Widget _buildBehaviorChip({
@@ -285,80 +705,367 @@ class _CoachChatPageState extends State<CoachChatPage> {
     );
   }
 
-  void _insertQuickText(String text) {
-    _messageController.text = text;
-    _messageController.selection = TextSelection.fromPosition(
-      TextPosition(offset: _messageController.text.length),
+  Widget _buildHeader(BuildContext context) {
+    final ThemeData theme = Theme.of(context);
+    final ColorScheme colors = theme.colorScheme;
+    final TextTheme textTheme = theme.textTheme;
+    final String peerName = widget.peerName.trim().isEmpty ? 'Без имени' : widget.peerName.trim();
+    final String subtitle = _conversation?.lastMessagePreview?.trim().isNotEmpty == true
+        ? _conversation!.lastMessagePreview!.trim()
+        : widget.onlineLabel;
+
+    return Container(
+      padding: const EdgeInsets.fromLTRB(24, 12, 24, 12),
+      decoration: BoxDecoration(
+        color: colors.surface,
+        border: Border(bottom: BorderSide(color: theme.dividerColor)),
+        boxShadow: <BoxShadow>[
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.04),
+            blurRadius: 10,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
+      child: Row(
+        children: <Widget>[
+          IconButton(
+            onPressed: () => Navigator.of(context).maybePop(),
+            icon: Icon(
+              Icons.arrow_back_ios_new_rounded,
+              size: 20,
+              color: colors.onSurface,
+            ),
+          ),
+          IdentityAvatar(
+            displayName: peerName,
+            avatarUrl: widget.avatarUrl,
+            size: 44,
+            backgroundColor: colors.secondary.withValues(alpha: 0.18),
+            textColor: colors.onSurface,
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: <Widget>[
+                Text(
+                  peerName,
+                  style: textTheme.titleMedium?.copyWith(
+                    color: colors.onSurface,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  subtitle,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: textTheme.labelSmall?.copyWith(color: colors.onSurfaceVariant),
+                ),
+              ],
+            ),
+          ),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+            decoration: BoxDecoration(
+              color: colors.surfaceContainerHighest.withValues(alpha: 0.18),
+              borderRadius: BorderRadius.circular(999),
+              border: Border.all(color: theme.dividerColor),
+            ),
+            child: Text(widget.onlineLabel, style: textTheme.labelSmall),
+          ),
+        ],
+      ),
     );
   }
 
-  void _sendMessage() {
-    final String text = _messageController.text.trim();
-    if (text.isEmpty) {
-      return;
-    }
+  Widget _buildComposer(BuildContext context) {
+    final ThemeData theme = Theme.of(context);
+    final ColorScheme colors = theme.colorScheme;
+    final TextTheme textTheme = theme.textTheme;
+    final double bottomInset = MediaQuery.of(context).viewInsets.bottom;
 
-    final TimeOfDay now = TimeOfDay.now();
-    final String minutes = now.minute.toString().padLeft(2, '0');
-    final String time = '${now.hour}:$minutes';
-
-    setState(() {
-      _messages.add(
-        _ChatMessage(
-          text: text,
-          time: time,
-          isSent: true,
-        ),
-      );
-      _messageController.clear();
-    });
-
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (_scrollController.hasClients) {
-        _scrollController.animateTo(
-          _scrollController.position.maxScrollExtent,
-          duration: const Duration(milliseconds: 220),
-          curve: Curves.easeOut,
-        );
-      }
-    });
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 150),
+      padding: EdgeInsets.fromLTRB(24, 12, 24, 12 + bottomInset),
+      decoration: BoxDecoration(
+        color: colors.surface,
+        border: Border(top: BorderSide(color: theme.dividerColor)),
+        boxShadow: <BoxShadow>[
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.08),
+            blurRadius: 16,
+            offset: const Offset(0, -3),
+          ),
+        ],
+      ),
+      child: Column(
+        children: <Widget>[
+          SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: Row(
+              children: <Widget>[
+                _ActionChip(
+                  label: 'Мягкий чек-ин',
+                  icon: Icons.chat_bubble_outline_rounded,
+                  onTap: () => _insertQuickText('Как вы себя чувствуете после сегодняшнего шага?'),
+                ),
+                const SizedBox(width: 8),
+                _ActionChip(
+                  label: 'Нужна поддержка',
+                  icon: Icons.support_agent_rounded,
+                  onTap: () => _insertQuickText('Нужна поддержка, хочу уточнить один момент.'),
+                ),
+                const SizedBox(width: 8),
+                _ActionChip(
+                  label: 'Есть вопрос',
+                  icon: Icons.help_outline_rounded,
+                  onTap: () => _insertQuickText('Есть вопрос по сегодняшнему шагу.'),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: <Widget>[
+              Container(
+                width: 44,
+                height: 44,
+                decoration: BoxDecoration(
+                  color: theme.scaffoldBackgroundColor,
+                  shape: BoxShape.circle,
+                ),
+                child: IconButton(
+                  onPressed: _isSendingMessage ? null : _showAttachmentPlaceholder,
+                  icon: Icon(
+                    Icons.add_rounded,
+                    color: textTheme.bodyMedium?.color,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: TextField(
+                  controller: _messageController,
+                  minLines: 1,
+                  maxLines: 4,
+                  enabled: !_isSendingMessage && !_isBootstrapping && _conversationId != null,
+                  decoration: InputDecoration(
+                    hintText: _conversationId == null ? 'Открываем диалог...' : 'Написать сообщение...',
+                    filled: true,
+                    fillColor: theme.scaffoldBackgroundColor,
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(20),
+                      borderSide: BorderSide.none,
+                    ),
+                    enabledBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(20),
+                      borderSide: BorderSide.none,
+                    ),
+                    focusedBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(20),
+                      borderSide: BorderSide(color: colors.primary),
+                    ),
+                  ),
+                  onSubmitted: (_) => _sendMessage(),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Container(
+                width: 44,
+                height: 44,
+                decoration: BoxDecoration(
+                  color: colors.primary,
+                  shape: BoxShape.circle,
+                  boxShadow: <BoxShadow>[
+                    BoxShadow(
+                      color: Colors.black.withValues(alpha: 0.1),
+                      blurRadius: 10,
+                      offset: const Offset(0, 2),
+                    ),
+                  ],
+                ),
+                child: IconButton(
+                  onPressed: _isSendingMessage || _conversationId == null ? null : _sendMessage,
+                  icon: _isSendingMessage
+                      ? SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            valueColor: AlwaysStoppedAnimation<Color>(colors.onPrimary),
+                          ),
+                        )
+                      : Icon(
+                          Icons.send_rounded,
+                          size: 20,
+                          color: colors.onPrimary,
+                        ),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
   }
 
-  void _sendPhotoStub() {
-    final TimeOfDay now = TimeOfDay.now();
-    final String minutes = now.minute.toString().padLeft(2, '0');
-    final String time = '${now.hour}:$minutes';
+  Widget _buildLoadingState(BuildContext context, {required String label}) {
+    final ThemeData theme = Theme.of(context);
+    final ColorScheme colors = theme.colorScheme;
 
-    setState(() {
-      _messages.add(
-        _ChatMessage(
-          text: 'Отправила фото завтрака',
-          time: time,
-          isSent: true,
-          imageUrl:
-              'https://dimg.dreamflow.cloud/v1/image/healthy+breakfast+bowl+with+avocado+and+eggs',
-        ),
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.all(24),
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: colors.surface,
+        borderRadius: BorderRadius.circular(24),
+        border: Border.all(color: theme.dividerColor),
+      ),
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: <Widget>[
+          const CircularProgressIndicator(),
+          const SizedBox(height: 16),
+          Text(
+            label,
+            style: theme.textTheme.bodyLarge?.copyWith(
+              color: colors.onSurface,
+              fontWeight: FontWeight.w600,
+            ),
+            textAlign: TextAlign.center,
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildErrorState(BuildContext context) {
+    final ThemeData theme = Theme.of(context);
+    final ColorScheme colors = theme.colorScheme;
+
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.all(24),
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: colors.surface,
+        borderRadius: BorderRadius.circular(24),
+        border: Border.all(color: theme.dividerColor),
+      ),
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: <Widget>[
+          Icon(Icons.chat_bubble_outline_rounded, size: 36, color: colors.primary),
+          const SizedBox(height: 12),
+          Text(
+            _conversationError ?? 'Переписка временно недоступна',
+            style: theme.textTheme.bodyLarge?.copyWith(
+              color: colors.onSurface,
+              fontWeight: FontWeight.w600,
+            ),
+            textAlign: TextAlign.center,
+          ),
+          const SizedBox(height: 12),
+          OutlinedButton(
+            onPressed: () => unawaited(_bootstrap()),
+            child: const Text('Повторить'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildEmptyState(BuildContext context) {
+    final ThemeData theme = Theme.of(context);
+    final ColorScheme colors = theme.colorScheme;
+
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.all(24),
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: colors.surface,
+        borderRadius: BorderRadius.circular(24),
+        border: Border.all(color: theme.dividerColor),
+      ),
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: <Widget>[
+          Icon(Icons.forum_outlined, size: 36, color: colors.primary),
+          const SizedBox(height: 12),
+          Text(
+            'Пока сообщений нет. Начните с короткого шага и зафиксируйте его здесь.',
+            style: theme.textTheme.bodyLarge?.copyWith(
+              color: colors.onSurface,
+              fontWeight: FontWeight.w600,
+            ),
+            textAlign: TextAlign.center,
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildConversationList(BuildContext context) {
+    if (_conversationError != null) {
+      return _buildErrorState(context);
+    }
+
+    if (_isBootstrapping || (_isLoadingMessages && _messages.isEmpty)) {
+      return _buildLoadingState(
+        context,
+        label: 'Синхронизируем переписку и поведенческий контекст...',
       );
-    });
+    }
 
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (_scrollController.hasClients) {
-        _scrollController.animateTo(
-          _scrollController.position.maxScrollExtent,
-          duration: const Duration(milliseconds: 220),
-          curve: Curves.easeOut,
+    if (_conversationId == null) {
+      return _buildLoadingState(
+        context,
+        label: 'Открываем диалог...',
+      );
+    }
+
+    if (_messages.isEmpty) {
+      return _buildEmptyState(context);
+    }
+
+    return ListView.builder(
+      controller: _scrollController,
+      padding: const EdgeInsets.fromLTRB(24, 24, 24, 16),
+      itemCount: _messages.length + 1,
+      itemBuilder: (BuildContext context, int index) {
+        if (index == 0) {
+          return Center(
+            child: Container(
+              margin: const EdgeInsets.only(bottom: 16),
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+              decoration: BoxDecoration(
+                color: Theme.of(context).colorScheme.surface,
+                borderRadius: BorderRadius.circular(999),
+                border: Border.all(color: Theme.of(context).dividerColor),
+              ),
+              child: Text('Сегодня', style: Theme.of(context).textTheme.labelSmall),
+            ),
+          );
+        }
+
+        final _ChatMessageRecord message = _messages[index - 1];
+        return _ChatMessageTile(
+          message: message,
+          isCurrentUser: _isCurrentUserMessage(message),
+          timeLabel: _formatTime(message.createdAt),
+          messageTypeLabel: _messageTypeLabel(message.messageType),
         );
-      }
-    });
+      },
+    );
   }
 
   @override
   Widget build(BuildContext context) {
     final ThemeData theme = Theme.of(context);
-    final ColorScheme colors = theme.colorScheme;
-    final TextTheme textTheme = theme.textTheme;
-    final double bottomInset = MediaQuery.of(context).viewInsets.bottom;
-    final String peerName = widget.peerName.trim().isEmpty ? 'Без имени' : widget.peerName.trim();
 
     return Scaffold(
       backgroundColor: theme.scaffoldBackgroundColor,
@@ -366,233 +1073,333 @@ class _CoachChatPageState extends State<CoachChatPage> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: <Widget>[
-            Container(
-              padding: const EdgeInsets.fromLTRB(24, 12, 24, 12),
-              decoration: BoxDecoration(
-                color: colors.surface,
-                border: Border(bottom: BorderSide(color: theme.dividerColor)),
-                boxShadow: <BoxShadow>[
-                  BoxShadow(
-                    color: Colors.black.withValues(alpha: 0.04),
-                    blurRadius: 10,
-                    offset: const Offset(0, 2),
-                  ),
-                ],
-              ),
-              child: Row(
-                children: <Widget>[
-                  IconButton(
-                    onPressed: () => Navigator.of(context).maybePop(),
-                    icon: Icon(
-                      Icons.arrow_back_ios_new_rounded,
-                      size: 20,
-                      color: colors.onSurface,
-                    ),
-                  ),
-                  IdentityAvatar(
-                    displayName: peerName,
-                    avatarUrl: widget.avatarUrl,
-                    size: 44,
-                    backgroundColor: colors.secondary.withValues(alpha: 0.18),
-                    textColor: colors.onSurface,
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: <Widget>[
-                        Text(
-                          peerName,
-                          style: textTheme.titleMedium?.copyWith(
-                            color: colors.onSurface,
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                        const SizedBox(height: 2),
-                        Row(
-                          children: <Widget>[
-                            Container(
-                              width: 8,
-                              height: 8,
-                              decoration: const BoxDecoration(
-                                color: Color(0xFF16A34A),
-                                shape: BoxShape.circle,
-                              ),
-                            ),
-                            const SizedBox(width: 6),
-                            Text(widget.onlineLabel, style: textTheme.labelSmall),
-                          ],
-                        ),
-                      ],
-                    ),
-                  ),
-                  IconButton(
-                    onPressed: () {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(
-                          content: Text('Видеозвонок будет доступен позже.'),
-                        ),
-                      );
-                    },
-                    icon: Icon(Icons.videocam_rounded, color: textTheme.bodyMedium?.color),
-                  ),
-                  IconButton(
-                    onPressed: () {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(content: Text('Информация о чате.')),
-                      );
-                    },
-                    icon: Icon(
-                      Icons.info_outline_rounded,
-                      color: textTheme.bodyMedium?.color,
-                    ),
-                  ),
-                ],
-              ),
-            ),
+            _buildHeader(context),
             if (!_isBehaviorLoading) _buildBehaviorStrip(context),
-            Expanded(
-              child: ListView(
-                controller: _scrollController,
-                padding: const EdgeInsets.all(24),
-                children: <Widget>[
-                  Center(
-                    child: Container(
-                      margin: const EdgeInsets.only(bottom: 16),
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 14,
-                        vertical: 6,
-                      ),
-                      decoration: BoxDecoration(
-                        color: colors.surface,
-                        borderRadius: BorderRadius.circular(999),
-                        border: Border.all(color: theme.dividerColor),
-                      ),
-                      child: Text('Сегодня', style: textTheme.labelSmall),
-                    ),
-                  ),
-                  ..._messages.map((message) => _ChatBubble(message: message)),
-                ],
-              ),
-            ),
-            AnimatedContainer(
-              duration: const Duration(milliseconds: 150),
-              padding: EdgeInsets.fromLTRB(24, 12, 24, 12 + bottomInset),
-              decoration: BoxDecoration(
-                color: colors.surface,
-                border: Border(top: BorderSide(color: theme.dividerColor)),
-                boxShadow: <BoxShadow>[
-                  BoxShadow(
-                    color: Colors.black.withValues(alpha: 0.08),
-                    blurRadius: 16,
-                    offset: const Offset(0, -3),
-                  ),
-                ],
-              ),
-              child: Column(
-                children: <Widget>[
-                  SingleChildScrollView(
-                    scrollDirection: Axis.horizontal,
-                    child: Row(
-                      children: <Widget>[
-                        _ActionChip(
-                          label: 'Отправила фото',
-                          icon: Icons.photo_camera_rounded,
-                          onTap: _sendPhotoStub,
-                        ),
-                        const SizedBox(width: 8),
-                        _ActionChip(
-                          label: 'Есть вопрос',
-                          icon: Icons.help_outline_rounded,
-                          onTap: () => _insertQuickText('Есть вопрос по плану на сегодня.'),
-                        ),
-                        const SizedBox(width: 8),
-                        _ActionChip(
-                          label: 'Все сделала!',
-                          icon: Icons.check_circle_outline_rounded,
-                          onTap: () => _insertQuickText('Все сделала!'),
-                        ),
-                      ],
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                  Row(
-                    children: <Widget>[
-                      Container(
-                        width: 44,
-                        height: 44,
-                        decoration: BoxDecoration(
-                          color: theme.scaffoldBackgroundColor,
-                          shape: BoxShape.circle,
-                        ),
-                        child: IconButton(
-                          onPressed: _sendPhotoStub,
-                          icon: Icon(
-                            Icons.add_rounded,
-                            color: textTheme.bodyMedium?.color,
-                          ),
-                        ),
-                      ),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: TextField(
-                          controller: _messageController,
-                          minLines: 1,
-                          maxLines: 4,
-                          decoration: InputDecoration(
-                            hintText: 'Написать сообщение...',
-                            filled: true,
-                            fillColor: theme.scaffoldBackgroundColor,
-                            border: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(20),
-                              borderSide: BorderSide.none,
-                            ),
-                            enabledBorder: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(20),
-                              borderSide: BorderSide.none,
-                            ),
-                            focusedBorder: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(20),
-                              borderSide: BorderSide(color: colors.primary),
-                            ),
-                          ),
-                          onSubmitted: (_) => _sendMessage(),
-                        ),
-                      ),
-                      const SizedBox(width: 12),
-                      Container(
-                        width: 44,
-                        height: 44,
-                        decoration: BoxDecoration(
-                          color: colors.primary,
-                          shape: BoxShape.circle,
-                          boxShadow: <BoxShadow>[
-                            BoxShadow(
-                              color: Colors.black.withValues(alpha: 0.1),
-                              blurRadius: 10,
-                              offset: const Offset(0, 2),
-                            ),
-                          ],
-                        ),
-                        child: IconButton(
-                          onPressed: _sendMessage,
-                          icon: Icon(
-                            Icons.send_rounded,
-                            size: 20,
-                            color: colors.onPrimary,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ],
-              ),
-            ),
+            Expanded(child: _buildConversationList(context)),
+            _buildComposer(context),
           ],
         ),
       ),
     );
   }
+}
+
+class _ConversationData {
+  const _ConversationData({
+    required this.id,
+    required this.clientId,
+    required this.coachId,
+    required this.createdAt,
+    required this.updatedAt,
+    this.lastMessageAt,
+    this.lastMessagePreview,
+    this.lastMessageSenderId,
+  });
+
+  final String id;
+  final String clientId;
+  final String coachId;
+  final DateTime? lastMessageAt;
+  final String? lastMessagePreview;
+  final String? lastMessageSenderId;
+  final DateTime? createdAt;
+  final DateTime? updatedAt;
+
+  factory _ConversationData.fromMap(Map<String, dynamic> row) {
+    return _ConversationData(
+      id: row['id']?.toString() ?? '',
+      clientId: row['client_id']?.toString() ?? '',
+      coachId: row['coach_id']?.toString() ?? '',
+      lastMessageAt: DateTime.tryParse(row['last_message_at']?.toString() ?? ''),
+      lastMessagePreview: row['last_message_preview']?.toString().trim(),
+      lastMessageSenderId: row['last_message_sender_id']?.toString().trim(),
+      createdAt: DateTime.tryParse(row['created_at']?.toString() ?? ''),
+      updatedAt: DateTime.tryParse(row['updated_at']?.toString() ?? ''),
+    );
+  }
+}
+
+class _ChatMessageRecord {
+  const _ChatMessageRecord({
+    required this.id,
+    required this.conversationId,
+    required this.senderId,
+    required this.receiverId,
+    required this.senderRole,
+    required this.messageType,
+    required this.content,
+    required this.metadata,
+    required this.createdAt,
+    this.readAt,
+    this.editedAt,
+    this.deletedAt,
+    this.imageUrl,
+  });
+
+  final String id;
+  final String conversationId;
+  final String senderId;
+  final String receiverId;
+  final String senderRole;
+  final String messageType;
+  final String content;
+  final Map<String, dynamic> metadata;
+  final DateTime createdAt;
+  final DateTime? readAt;
+  final DateTime? editedAt;
+  final DateTime? deletedAt;
+  final String? imageUrl;
+
+  factory _ChatMessageRecord.fromMap(Map<String, dynamic> row) {
+    return _ChatMessageRecord(
+      id: row['id']?.toString() ?? '',
+      conversationId: row['conversation_id']?.toString() ?? '',
+      senderId: row['sender_id']?.toString() ?? '',
+      receiverId: row['receiver_id']?.toString() ?? '',
+      senderRole: row['sender_role']?.toString().trim().toLowerCase() ?? 'client',
+      messageType: row['message_type']?.toString().trim().toLowerCase() ?? 'text',
+      content: row['content']?.toString().trim().isNotEmpty == true
+          ? row['content'].toString().trim()
+          : row['text']?.toString().trim() ?? '',
+      metadata: row['metadata'] is Map ? Map<String, dynamic>.from(row['metadata'] as Map) : <String, dynamic>{},
+      createdAt: DateTime.tryParse(row['created_at']?.toString() ?? '') ?? DateTime.now(),
+      readAt: DateTime.tryParse(row['read_at']?.toString() ?? ''),
+      editedAt: DateTime.tryParse(row['edited_at']?.toString() ?? ''),
+      deletedAt: DateTime.tryParse(row['deleted_at']?.toString() ?? ''),
+      imageUrl: row['image_url']?.toString().trim().isNotEmpty == true
+          ? row['image_url'].toString().trim()
+          : null,
+    );
+  }
+}
+
+class _ChatMessageTile extends StatelessWidget {
+  const _ChatMessageTile({
+    required this.message,
+    required this.isCurrentUser,
+    required this.timeLabel,
+    required this.messageTypeLabel,
+  });
+
+  final _ChatMessageRecord message;
+  final bool isCurrentUser;
+  final String timeLabel;
+  final String messageTypeLabel;
+
+  _MessagePalette _palette(BuildContext context) {
+    final ThemeData theme = Theme.of(context);
+    final ColorScheme colors = theme.colorScheme;
+
+    switch (message.messageType) {
+      case 'system':
+        return _MessagePalette(
+          background: colors.surfaceContainerHighest.withValues(alpha: 0.7),
+          border: theme.dividerColor,
+          foreground: colors.onSurfaceVariant,
+          labelBackground: colors.surfaceContainerHighest,
+          labelForeground: colors.onSurfaceVariant,
+        );
+      case 'intervention':
+        return _MessagePalette(
+          background: colors.secondaryContainer,
+          border: colors.secondary.withValues(alpha: 0.18),
+          foreground: colors.onSecondaryContainer,
+          labelBackground: colors.secondary.withValues(alpha: 0.12),
+          labelForeground: colors.secondary,
+        );
+      case 'reflection_prompt':
+        return _MessagePalette(
+          background: colors.tertiaryContainer,
+          border: colors.tertiary.withValues(alpha: 0.18),
+          foreground: colors.onTertiaryContainer,
+          labelBackground: colors.tertiary.withValues(alpha: 0.12),
+          labelForeground: colors.tertiary,
+        );
+      case 'coach_note':
+        return _MessagePalette(
+          background: colors.primaryContainer,
+          border: colors.primary.withValues(alpha: 0.18),
+          foreground: colors.onPrimaryContainer,
+          labelBackground: colors.primary.withValues(alpha: 0.12),
+          labelForeground: colors.primary,
+        );
+      case 'checkin_followup':
+        return _MessagePalette(
+          background: colors.secondaryContainer.withValues(alpha: 0.86),
+          border: colors.secondary.withValues(alpha: 0.18),
+          foreground: colors.onSecondaryContainer,
+          labelBackground: colors.secondary.withValues(alpha: 0.12),
+          labelForeground: colors.secondary,
+        );
+      default:
+        if (isCurrentUser) {
+          return _MessagePalette(
+            background: colors.primary.withValues(alpha: 0.14),
+            border: colors.primary.withValues(alpha: 0.22),
+            foreground: colors.onSurface,
+            labelBackground: colors.primary.withValues(alpha: 0.12),
+            labelForeground: colors.primary,
+          );
+        }
+
+        return _MessagePalette(
+          background: colors.surface,
+          border: theme.dividerColor,
+          foreground: colors.onSurface,
+          labelBackground: colors.surfaceContainerHighest.withValues(alpha: 0.18),
+          labelForeground: colors.onSurfaceVariant,
+        );
+    }
+  }
+
+  Widget _buildImage(BuildContext context) {
+    final ThemeData theme = Theme.of(context);
+    final ColorScheme colors = theme.colorScheme;
+
+    final String? imageUrl = message.imageUrl;
+    if (imageUrl == null || imageUrl.isEmpty) {
+      return const SizedBox.shrink();
+    }
+
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(12),
+      child: Image.network(
+        imageUrl,
+        width: 220,
+        height: 140,
+        fit: BoxFit.cover,
+        errorBuilder: (_, __, ___) => Container(
+          width: 220,
+          height: 140,
+          color: colors.surfaceContainerHighest.withValues(alpha: 0.35),
+          alignment: Alignment.center,
+          child: Icon(Icons.image_not_supported_outlined, color: colors.onSurfaceVariant),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildContent(BuildContext context, _MessagePalette palette) {
+    final ThemeData theme = Theme.of(context);
+    final ColorScheme colors = theme.colorScheme;
+    final TextTheme textTheme = theme.textTheme;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: <Widget>[
+        if (messageTypeLabel.isNotEmpty && message.messageType != 'text' && message.messageType != 'system') ...<Widget>[
+          Container(
+            margin: const EdgeInsets.only(bottom: 8),
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+            decoration: BoxDecoration(
+              color: palette.labelBackground,
+              borderRadius: BorderRadius.circular(999),
+            ),
+            child: Text(
+              messageTypeLabel,
+              style: textTheme.labelSmall?.copyWith(
+                color: palette.labelForeground,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ),
+        ],
+        if (message.messageType == 'system') ...<Widget>[
+          Text(
+            message.content,
+            style: textTheme.bodyMedium?.copyWith(color: palette.foreground),
+            textAlign: TextAlign.center,
+          ),
+        ] else ...<Widget>[
+          if (message.imageUrl != null) ...<Widget>[
+            _buildImage(context),
+            const SizedBox(height: 8),
+          ],
+          Text(
+            message.content,
+            style: textTheme.bodyMedium?.copyWith(color: palette.foreground),
+          ),
+        ],
+        const SizedBox(height: 8),
+        Row(
+          mainAxisSize: MainAxisSize.min,
+          children: <Widget>[
+            Text(
+              timeLabel,
+              style: textTheme.labelSmall?.copyWith(color: colors.onSurfaceVariant),
+            ),
+            if (isCurrentUser && message.messageType != 'system') ...<Widget>[
+              const SizedBox(width: 8),
+              Text(
+                message.readAt == null ? 'Доставлено' : 'Прочитано',
+                style: textTheme.labelSmall?.copyWith(color: colors.onSurfaceVariant),
+              ),
+            ],
+            if (message.editedAt != null) ...<Widget>[
+              const SizedBox(width: 8),
+              Text(
+                'изменено',
+                style: textTheme.labelSmall?.copyWith(color: colors.onSurfaceVariant),
+              ),
+            ],
+          ],
+        ),
+      ],
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final _MessagePalette palette = _palette(context);
+
+    if (message.messageType == 'system') {
+      return Align(
+        alignment: Alignment.center,
+        child: Container(
+          constraints: const BoxConstraints(maxWidth: 380),
+          margin: const EdgeInsets.only(bottom: 10),
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            color: palette.background,
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: palette.border),
+          ),
+          child: _buildContent(context, palette),
+        ),
+      );
+    }
+
+    return Align(
+      alignment: isCurrentUser ? Alignment.centerRight : Alignment.centerLeft,
+      child: Container(
+        constraints: const BoxConstraints(maxWidth: 380),
+        margin: const EdgeInsets.only(bottom: 10),
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: palette.background,
+          borderRadius: BorderRadius.circular(18),
+          border: Border.all(color: palette.border),
+        ),
+        child: _buildContent(context, palette),
+      ),
+    );
+  }
+}
+
+class _MessagePalette {
+  const _MessagePalette({
+    required this.background,
+    required this.border,
+    required this.foreground,
+    required this.labelBackground,
+    required this.labelForeground,
+  });
+
+  final Color background;
+  final Color border;
+  final Color foreground;
+  final Color labelBackground;
+  final Color labelForeground;
 }
 
 class _ActionChip extends StatelessWidget {
@@ -622,87 +1429,4 @@ class _ActionChip extends StatelessWidget {
       ),
     );
   }
-}
-
-class _ChatBubble extends StatelessWidget {
-  const _ChatBubble({required this.message});
-
-  final _ChatMessage message;
-
-  @override
-  Widget build(BuildContext context) {
-    final ThemeData theme = Theme.of(context);
-    final ColorScheme colors = theme.colorScheme;
-    final TextTheme textTheme = theme.textTheme;
-
-    final Color bubbleColor = message.isSent
-        ? colors.primary.withValues(alpha: 0.14)
-        : colors.surface;
-
-    return Align(
-      alignment: message.isSent ? Alignment.centerRight : Alignment.centerLeft,
-      child: Container(
-        constraints: const BoxConstraints(maxWidth: 380),
-        margin: const EdgeInsets.only(bottom: 10),
-        padding: const EdgeInsets.all(12),
-        decoration: BoxDecoration(
-          color: bubbleColor,
-          borderRadius: BorderRadius.circular(18),
-          border: Border.all(
-            color: message.isSent ? colors.primary.withValues(alpha: 0.22) : theme.dividerColor,
-          ),
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: <Widget>[
-            if (message.imageUrl != null) ...<Widget>[
-              ClipRRect(
-                borderRadius: BorderRadius.circular(12),
-                child: Image.network(
-                  message.imageUrl!,
-                  width: 220,
-                  height: 140,
-                  fit: BoxFit.cover,
-                  errorBuilder: (_, __, ___) => Container(
-                    width: 220,
-                    height: 140,
-                    color: theme.scaffoldBackgroundColor,
-                    alignment: Alignment.center,
-                    child: Icon(
-                      Icons.image_not_supported_outlined,
-                      color: textTheme.bodyMedium?.color,
-                    ),
-                  ),
-                ),
-              ),
-              const SizedBox(height: 8),
-            ],
-            Text(
-              message.text,
-              style: textTheme.bodyMedium?.copyWith(color: colors.onSurface),
-            ),
-            const SizedBox(height: 6),
-            Align(
-              alignment: Alignment.centerRight,
-              child: Text(message.time, style: textTheme.labelSmall),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _ChatMessage {
-  const _ChatMessage({
-    required this.text,
-    required this.time,
-    required this.isSent,
-    this.imageUrl,
-  });
-
-  final String text;
-  final String time;
-  final bool isSent;
-  final String? imageUrl;
 }
