@@ -10,6 +10,7 @@ import '../../features/checkin/check_in_page.dart';
 import '../../features/coach_panel/presentation/coach_client_details_page.dart';
 import '../../features/coach_panel/presentation/coach_clients_page.dart';
 import '../../features/coach_panel/presentation/coach_plan_editor_page.dart';
+import '../../features/coach_panel/presentation/coach_workqueue_page.dart';
 import '../../features/coach_panel/presentation/coach_route_args.dart';
 import '../../features/content/knowledge_base_page.dart';
 import '../../features/dashboard/dashboard_page.dart';
@@ -38,6 +39,7 @@ class AppRouter {
   static const String profileEdit = '/profile/edit';
 
   static const String coachPanel = '/coach/panel';
+  static const String coachClients = '/coach/clients';
   static const String coachClientDetails = '/coach/client-details';
   static const String coachChat = '/coach/chat';
   static const String coachPlanEditor = '/coach/plan-editor';
@@ -62,6 +64,7 @@ class AppRouter {
 
   static const Set<String> _coachRoutes = <String>{
     coachPanel,
+    coachClients,
     coachClientDetails,
     coachChat,
     coachPlanEditor,
@@ -184,6 +187,8 @@ class AppRouter {
       case profileEdit:
         return _buildProfileEditRoute();
       case coachPanel:
+        return _buildCoachWorkqueueRoute();
+      case coachClients:
         return _buildCoachClientsRoute();
       case coachClientDetails:
         return _buildCoachClientDetailsRoute(settings);
@@ -268,7 +273,7 @@ class AppRouter {
 
   MaterialPageRoute<dynamic> _buildCoachClientsRoute() {
     return MaterialPageRoute<dynamic>(
-      settings: const RouteSettings(name: coachPanel),
+      settings: const RouteSettings(name: coachClients),
       builder: (BuildContext context) {
         return CoachClientsPage(
           onOpenClient: (CoachClientRouteArgs args) {
@@ -289,6 +294,36 @@ class AppRouter {
               arguments: args,
             );
           },
+          onOpenProfile: () => Navigator.of(context).pushNamed(profile),
+        );
+      },
+    );
+  }
+
+  MaterialPageRoute<dynamic> _buildCoachWorkqueueRoute() {
+    return MaterialPageRoute<dynamic>(
+      settings: const RouteSettings(name: coachPanel),
+      builder: (BuildContext context) {
+        return CoachWorkqueuePage(
+          onOpenClient: (CoachClientRouteArgs args) {
+            debugPrint(
+              'ROUTE coachClientDetails PUSH: clientId=${args.clientId} clientName=${args.clientName}',
+            );
+            Navigator.of(context).pushNamed(
+              coachClientDetails,
+              arguments: args,
+            );
+          },
+          onOpenChat: (CoachClientRouteArgs args) {
+            debugPrint(
+              'ROUTE coachChat PUSH FROM WORKQUEUE: clientId=${args.clientId} clientName=${args.clientName}',
+            );
+            Navigator.of(context).pushNamed(
+              coachChat,
+              arguments: args,
+            );
+          },
+          onOpenClients: () => Navigator.of(context).pushNamed(coachClients),
           onOpenProfile: () => Navigator.of(context).pushNamed(profile),
         );
       },
@@ -386,6 +421,7 @@ class AppRouter {
         avatarUrl: peerAvatarUrl,
         peerUserId: args?.clientId ?? '',
         behaviorUserId: args?.clientId ?? '',
+        initialDraft: args?.initialDraft ?? '',
       ),
     );
   }

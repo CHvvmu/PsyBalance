@@ -1,6 +1,5 @@
 import 'dart:async';
 
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
@@ -14,6 +13,7 @@ class CoachChatPage extends StatefulWidget {
     required this.avatarUrl,
     required this.peerUserId,
     required this.behaviorUserId,
+    this.initialDraft = '',
     this.onlineLabel = 'В сети',
   });
 
@@ -21,6 +21,7 @@ class CoachChatPage extends StatefulWidget {
   final String avatarUrl;
   final String peerUserId;
   final String behaviorUserId;
+  final String initialDraft;
   final String onlineLabel;
 
   @override
@@ -34,7 +35,7 @@ class _CoachChatPageState extends State<CoachChatPage> {
   );
 
   final SupabaseClient _client = Supabase.instance.client;
-  final TextEditingController _messageController = TextEditingController();
+  late final TextEditingController _messageController;
   final ScrollController _scrollController = ScrollController();
 
   RealtimeChannel? _messagesChannel;
@@ -63,6 +64,7 @@ class _CoachChatPageState extends State<CoachChatPage> {
   @override
   void initState() {
     super.initState();
+    _messageController = TextEditingController(text: widget.initialDraft);
     unawaited(_bootstrap());
   }
 
@@ -143,27 +145,6 @@ class _CoachChatPageState extends State<CoachChatPage> {
     return null;
   }
 
-  String _platformLabel() {
-    if (kIsWeb) {
-      return 'web';
-    }
-
-    switch (defaultTargetPlatform) {
-      case TargetPlatform.android:
-        return 'android';
-      case TargetPlatform.iOS:
-        return 'ios';
-      case TargetPlatform.macOS:
-        return 'macos';
-      case TargetPlatform.windows:
-        return 'windows';
-      case TargetPlatform.linux:
-        return 'linux';
-      case TargetPlatform.fuchsia:
-        return 'fuchsia';
-    }
-  }
-
   String _formatTime(DateTime value) {
     final String hour = value.hour.toString().padLeft(2, '0');
     final String minute = value.minute.toString().padLeft(2, '0');
@@ -203,7 +184,8 @@ class _CoachChatPageState extends State<CoachChatPage> {
   Map<String, dynamic> _messageMetadata({required String trigger}) {
     return <String, dynamic>{
       'source_screen': 'chat_page',
-      'platform': _platformLabel(),
+      'platform': 'mobile',
+      'session_type': 'coach_chat',
       'app_version': _appVersion,
       'trigger': trigger,
       'conversation_id': _conversationId,
@@ -388,9 +370,8 @@ class _CoachChatPageState extends State<CoachChatPage> {
       _conversationError = null;
     });
 
-    await _loadMessages(conversation.id, bootstrapToken, markReadAfterLoad: false);
+    await _loadMessages(conversation.id, bootstrapToken, markReadAfterLoad: true);
     await _subscribeToConversation(conversation.id, bootstrapToken);
-    await _markConversationMessagesRead();
   }
 
   Future<void> _loadMessages(
@@ -422,6 +403,9 @@ class _CoachChatPageState extends State<CoachChatPage> {
       final List<_ChatMessageRecord> nextMessages = rows
           .map((dynamic row) => _ChatMessageRecord.fromMap(row as Map<String, dynamic>))
           .toList(growable: false);
+      final bool hasUnreadIncoming = markReadAfterLoad && nextMessages.any((_ChatMessageRecord message) {
+        return message.senderId != _currentUserId && message.readAt == null;
+      });
 
       setState(() {
         _messages = nextMessages;
@@ -430,7 +414,7 @@ class _CoachChatPageState extends State<CoachChatPage> {
 
       _scrollToBottom();
 
-      if (markReadAfterLoad) {
+      if (hasUnreadIncoming) {
         unawaited(_markConversationMessagesRead());
       }
     } catch (error) {
@@ -567,19 +551,13 @@ class _CoachChatPageState extends State<CoachChatPage> {
           'p_conversation_id': conversationId,
           'p_content': content,
           'p_message_type': 'text',
-          'p_metadata': _messageMetadata(trigger: 'composer_send'),
+          'p_metadata': _messageMetadata(trigger: 'manual_message'),
         },
       );
 
       final Map<String, dynamic>? row = _singleRowFromRpc(result);
       if (row != null) {
-        final _ChatMessageRecord sentMessage = _ChatMessageRecord.fromMap(row);
-        if (mounted) {
-          setState(() {
-            _messages = <_ChatMessageRecord>[..._messages, sentMessage];
-          });
-          _scrollToBottom();
-        }
+        _scheduleRefresh(markReadAfterLoad: false);
       } else {
         unawaited(_loadMessages(conversationId, _bootstrapToken, markReadAfterLoad: false));
       }

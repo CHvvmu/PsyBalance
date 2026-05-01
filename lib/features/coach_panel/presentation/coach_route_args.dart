@@ -105,11 +105,13 @@ class CoachClientRouteArgs {
     required this.clientId,
     required this.clientName,
     this.avatarUrl = '',
+    this.initialDraft = '',
   });
 
   final String clientId;
   final String clientName;
   final String avatarUrl;
+  final String initialDraft;
 
   String get userId => clientId;
 }
