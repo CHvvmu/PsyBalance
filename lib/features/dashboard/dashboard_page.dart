@@ -3,6 +3,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../../core/navigation/app_route_observer.dart';
 import '../../core/widgets/identity_avatar.dart';
+import '../plan/active_plan_repository.dart';
 import '../coach_panel/presentation/coach_route_args.dart';
 import '../plan/plan_item_details_page.dart';
 
@@ -906,6 +907,7 @@ class _DailyPlanSectionState extends State<_DailyPlanSection> {
   String? _errorMessage;
   String? _planId;
   String? _weekStartLabel;
+  String? _weekStartValue;
   List<PlanItemData> _items = <PlanItemData>[];
 
   @override
@@ -929,19 +931,18 @@ class _DailyPlanSectionState extends State<_DailyPlanSection> {
         _errorMessage = 'План появится после первых шагов';
         _planId = null;
         _weekStartLabel = null;
+        _weekStartValue = null;
         _items = <PlanItemData>[];
       });
       return;
     }
 
     try {
-      final Map<String, dynamic>? planRow = await _client
-          .from('plans')
-          .select('id, week_start')
-          .eq('user_id', currentUser.id)
-          .order('week_start', ascending: false)
-          .limit(1)
-          .maybeSingle();
+      final Map<String, dynamic>? planRow = await loadOrCreateActivePlanRow(
+        client: _client,
+        userId: currentUser.id,
+        sourceLabel: 'dashboard-plan-section',
+      );
 
       if (planRow == null) {
         if (!mounted) {
@@ -953,6 +954,7 @@ class _DailyPlanSectionState extends State<_DailyPlanSection> {
           _errorMessage = null;
           _planId = null;
           _weekStartLabel = null;
+          _weekStartValue = null;
           _items = <PlanItemData>[];
         });
         return;
@@ -960,14 +962,16 @@ class _DailyPlanSectionState extends State<_DailyPlanSection> {
 
       final String planId = planRow['id']?.toString() ?? '';
       final String weekStartLabel = _formatWeekStart(planRow['week_start']?.toString());
+      final String weekStartValue = planRow['week_start']?.toString() ?? '';
 
-      final List<dynamic> rows = await _client
-          .from('plan_items')
-          .select('id, plan_id, title, description, status, created_at')
-          .eq('plan_id', planId);
+      final List<Map<String, dynamic>> rows = await loadActivePlanItemRows(
+        client: _client,
+        planId: planId,
+        sourceLabel: 'dashboard-plan-section',
+      );
 
       final List<PlanItemData> items = rows
-          .map((dynamic rowData) => PlanItemData.fromMap(rowData as Map<String, dynamic>))
+          .map((Map<String, dynamic> rowData) => PlanItemData.fromMap(rowData))
           .toList()
         ..sort((PlanItemData left, PlanItemData right) {
           final DateTime? leftCreated = left.createdAt;
@@ -996,6 +1000,7 @@ class _DailyPlanSectionState extends State<_DailyPlanSection> {
           _errorMessage = null;
           _planId = planId;
           _weekStartLabel = weekStartLabel;
+          _weekStartValue = weekStartValue;
           _items = <PlanItemData>[];
         });
         return;
@@ -1011,6 +1016,7 @@ class _DailyPlanSectionState extends State<_DailyPlanSection> {
         _errorMessage = null;
         _planId = planId;
         _weekStartLabel = weekStartLabel;
+        _weekStartValue = weekStartValue;
         _items = items;
       });
     } catch (error) {
@@ -1025,6 +1031,7 @@ class _DailyPlanSectionState extends State<_DailyPlanSection> {
         _items = <PlanItemData>[];
         _planId = null;
         _weekStartLabel = null;
+        _weekStartValue = null;
       });
     }
   }

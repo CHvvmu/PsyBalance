@@ -765,6 +765,42 @@ alter table public.task_activity
   alter column updated_at set default now(),
   alter column created_at set default now();
 
+alter table public.task_activity
+  add column if not exists request_key text,
+  add column if not exists source_event_key text,
+  add column if not exists task_snapshot jsonb default '{}'::jsonb,
+  add column if not exists archived_at timestamp with time zone;
+
+update public.task_activity
+set task_snapshot = coalesce(task_snapshot, '{}'::jsonb)
+where task_snapshot is null;
+
+create unique index if not exists idx_task_activity_request_key on public.task_activity(task_id, request_key) where request_key is not null;
+create unique index if not exists idx_task_activity_source_event_key on public.task_activity(source_event_key) where source_event_key is not null;
+
+create or replace function public._behavior_block_task_activity_mutation()
+returns trigger
+language plpgsql
+as $$
+begin
+  if public._behavior_is_maintenance_actor() then
+    return case when tg_op = 'DELETE' then old else new end;
+  end if;
+
+  raise exception 'task_activity is append-only' using errcode = '42501';
+end;
+$$;
+
+drop trigger if exists task_activity_block_update on public.task_activity;
+create trigger task_activity_block_update
+before update on public.task_activity
+for each row execute function public._behavior_block_task_activity_mutation();
+
+drop trigger if exists task_activity_block_delete on public.task_activity;
+create trigger task_activity_block_delete
+before delete on public.task_activity
+for each row execute function public._behavior_block_task_activity_mutation();
+
 drop trigger if exists task_activity_normalize_event on public.task_activity;
 
 create trigger task_activity_normalize_event
@@ -804,13 +840,7 @@ for insert
 to authenticated
 with check (
   user_id = auth.uid()
-  and exists (
-    select 1
-    from public.plan_items pi
-    join public.plans p on p.id = pi.plan_id
-    where pi.id = task_id
-      and p.user_id = auth.uid()
-  )
+  or public._behavior_is_coach_for_user(user_id)
 );
 
 drop policy if exists "task_activity_update_own_rows" on public.task_activity;
@@ -819,26 +849,8 @@ create policy "task_activity_update_own_rows"
 on public.task_activity
 for update
 to authenticated
-using (
-  user_id = auth.uid()
-  and exists (
-    select 1
-    from public.plan_items pi
-    join public.plans p on p.id = pi.plan_id
-    where pi.id = task_id
-      and p.user_id = auth.uid()
-  )
-)
-with check (
-  user_id = auth.uid()
-  and exists (
-    select 1
-    from public.plan_items pi
-    join public.plans p on p.id = pi.plan_id
-    where pi.id = task_id
-      and p.user_id = auth.uid()
-  )
-);
+using (false)
+with check (false);
 
 drop policy if exists "task_activity_delete_own_rows" on public.task_activity;
 
@@ -846,16 +858,7 @@ create policy "task_activity_delete_own_rows"
 on public.task_activity
 for delete
 to authenticated
-using (
-  user_id = auth.uid()
-  and exists (
-    select 1
-    from public.plan_items pi
-    join public.plans p on p.id = pi.plan_id
-    where pi.id = task_id
-      and p.user_id = auth.uid()
-  )
-);
+using (false);
 
 create or replace function public.rebuild_task_projection(task_id uuid)
 returns void
@@ -882,9 +885,11 @@ begin
     raise exception 'Task not found' using errcode = 'P0002';
   end if;
 
-  if v_owner_id <> auth.uid() then
+  if v_owner_id <> auth.uid() and not public._behavior_is_coach_for_user(v_owner_id) then
     raise exception 'Access denied for task projection rebuild' using errcode = '42501';
   end if;
+
+  perform set_config('app.behavior_projection', '1', true);
 
   v_new_status := public._behavior_rebuild_task_projection_core(task_id);
 
@@ -915,12 +920,13 @@ declare
   v_event_type text := lower(nullif(btrim(coalesce(event_type, '')), ''));
   v_event_source text := lower(coalesce(nullif(btrim(coalesce(event_source, '')), ''), 'user'));
   v_metadata jsonb := coalesce(metadata, '{}'::jsonb);
+  v_request_key text := public._behavior_task_request_key(task_id, v_event_type, coalesce(v_metadata ->> 'request_key', v_metadata ->> 'operation_id'));
 begin
   if auth.uid() is null then
     raise exception 'Not authenticated' using errcode = '28000';
   end if;
 
-  if v_event_type is null or v_event_type not in ('completed', 'skipped', 'reopened') then
+  if v_event_type is null or v_event_type not in ('completed', 'skipped', 'reopened', 'created') then
     raise exception 'Unsupported task event type: %', event_type using errcode = '23514';
   end if;
 
@@ -939,22 +945,403 @@ begin
     raise exception 'Access denied for task event' using errcode = '42501';
   end if;
 
+  if exists (
+    select 1
+    from public.task_activity ta
+    where ta.task_id = task_id
+      and lower(coalesce(nullif(btrim(coalesce(ta.request_key, '')), ''), '')) = lower(v_request_key)
+  ) then
+    perform public.rebuild_task_projection(task_id);
+    return;
+  end if;
+
   insert into public.task_activity (
     user_id,
     task_id,
     event_type,
     event_source,
-    metadata
+    metadata,
+    request_key,
+    source_event_key,
+    task_snapshot
   )
   values (
     auth.uid(),
     task_id,
     v_event_type,
     v_event_source,
-    v_metadata
+    jsonb_strip_nulls(v_metadata || jsonb_build_object('request_key', v_request_key)),
+    v_request_key,
+    format('task_activity:%s:%s', task_id, v_request_key),
+    jsonb_strip_nulls(jsonb_build_object(
+      'task_id', task_id,
+      'event_type', v_event_type,
+      'event_source', v_event_source
+    ))
   );
 
   perform public.rebuild_task_projection(task_id);
+end;
+$$;
+
+create or replace function public._behavior_append_task_event(
+  p_task_id uuid,
+  p_actor_user_id uuid,
+  p_event_type text,
+  p_event_source text,
+  p_metadata jsonb default '{}'::jsonb,
+  p_request_key text default null,
+  p_completed boolean default false,
+  p_skipped boolean default false
+)
+returns uuid
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_event_type text := public._behavior_task_event_type(p_event_type, p_completed, p_skipped);
+  v_request_key text := public._behavior_task_request_key(p_task_id, coalesce(v_event_type, p_event_type), p_request_key);
+  v_existing_id uuid;
+  v_metadata jsonb := jsonb_strip_nulls(coalesce(p_metadata, '{}'::jsonb) || jsonb_build_object('request_key', v_request_key));
+begin
+  if p_task_id is null or p_actor_user_id is null or v_event_type is null then
+    return null;
+  end if;
+
+  select ta.id
+  into v_existing_id
+  from public.task_activity ta
+  where ta.task_id = p_task_id
+    and lower(coalesce(nullif(btrim(coalesce(ta.request_key, '')), ''), '')) = lower(v_request_key)
+  limit 1;
+
+  if v_existing_id is not null then
+    perform public.rebuild_task_projection(p_task_id);
+    return v_existing_id;
+  end if;
+
+  insert into public.task_activity (
+    user_id,
+    task_id,
+    event_type,
+    event_source,
+    metadata,
+    completed,
+    skipped,
+    completed_at,
+    request_key,
+    source_event_key,
+    task_snapshot
+  )
+  values (
+    p_actor_user_id,
+    p_task_id,
+    v_event_type,
+    coalesce(nullif(btrim(coalesce(p_event_source, '')), ''), 'user'),
+    v_metadata,
+    coalesce(p_completed, false),
+    coalesce(p_skipped, false),
+    case when v_event_type = 'completed' or v_event_type = 'task_completed' then now() else null end,
+    v_request_key,
+    format('task_activity:%s:%s', p_task_id, v_request_key),
+    jsonb_strip_nulls(jsonb_build_object(
+      'task_id', p_task_id,
+      'event_type', v_event_type,
+      'event_source', coalesce(nullif(btrim(coalesce(p_event_source, '')), ''), 'user')
+    ))
+  )
+  returning id into v_existing_id;
+
+  perform public.rebuild_task_projection(p_task_id);
+  return v_existing_id;
+end;
+$$;
+
+create or replace function public.create_plan_item(
+  p_client_id uuid,
+  p_title text,
+  p_description text default null,
+  p_scheduled_at timestamp with time zone default null,
+  p_week_start date default null,
+  p_category text default null,
+  p_request_key text default null
+)
+returns public.plan_items
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_title text := public._behavior_clean_text(p_title);
+  v_description text := public._behavior_clean_text(p_description);
+  v_category text := public._behavior_clean_text(p_category);
+  v_request_key text := lower(public._behavior_clean_text(p_request_key));
+  v_plan_id uuid;
+  v_existing_row public.plan_items%rowtype;
+  v_row public.plan_items%rowtype;
+begin
+  if auth.uid() is null then
+    raise exception 'Not authenticated' using errcode = '28000';
+  end if;
+
+  if v_title is null then
+    raise exception 'Task title is required' using errcode = '23502';
+  end if;
+
+  if p_client_id is null then
+    raise exception 'Client is required' using errcode = '23502';
+  end if;
+
+  if auth.uid() <> p_client_id and not public._behavior_is_coach_for_user(p_client_id) then
+    raise exception 'Access denied for plan item creation' using errcode = '42501';
+  end if;
+
+  if public._behavior_clean_text(p_request_key) is null then
+    raise exception 'Request key is required' using errcode = '23502';
+  end if;
+
+  perform pg_advisory_xact_lock(
+    hashtext(format('create_plan_item:%s', p_client_id::text)),
+    hashtext(v_request_key)
+  );
+
+  select pi.*
+  into v_existing_row
+  from public.task_activity ta
+  join public.plan_items pi on pi.id = ta.task_id
+  join public.plans p on p.id = pi.plan_id
+  where lower(coalesce(nullif(btrim(coalesce(ta.request_key, '')), ''), '')) = lower(v_request_key)
+    and p.user_id = p_client_id
+  order by ta.created_at desc, ta.id desc
+  limit 1;
+
+  if v_existing_row.id is not null then
+    return v_existing_row;
+  end if;
+
+  select id
+  into v_plan_id
+  from public.get_or_create_active_plan(
+    p_client_id,
+    coalesce(
+      p_week_start,
+      current_date - (extract(isodow from current_date)::int - 1)
+    )
+  );
+
+  insert into public.plan_items (
+    plan_id,
+    title,
+    description,
+    status,
+    created_at,
+    updated_at,
+    scheduled_at,
+    task_category
+  )
+  values (
+    v_plan_id,
+    v_title,
+    v_description,
+    'pending',
+    coalesce(p_scheduled_at, now()),
+    now(),
+    p_scheduled_at,
+    v_category
+  )
+  returning * into v_row;
+
+  perform public._behavior_append_task_event(
+    p_task_id := v_row.id,
+    p_actor_user_id := p_client_id,
+    p_event_type := 'created',
+    p_event_source := 'coach',
+    p_metadata := jsonb_strip_nulls(jsonb_build_object(
+      'request_key', v_request_key,
+      'plan_id', v_plan_id,
+      'task_title', v_title,
+      'task_description', v_description,
+      'scheduled_at', p_scheduled_at,
+      'category', v_category,
+      'primary_user_id', p_client_id
+    )),
+    p_request_key := v_request_key
+  );
+
+  update public.plan_items
+  set status = 'pending',
+      updated_at = now()
+  where id = v_row.id;
+
+  return v_row;
+end;
+$$;
+
+create or replace function public.update_plan_item(
+  p_task_id uuid,
+  p_title text default null,
+  p_description text default null,
+  p_scheduled_at timestamp with time zone default null,
+  p_category text default null,
+  p_request_key text default null
+)
+returns public.plan_items
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_owner_id uuid;
+  v_title text := public._behavior_clean_text(p_title);
+  v_description text := public._behavior_clean_text(p_description);
+  v_category text := public._behavior_clean_text(p_category);
+  v_row public.plan_items%rowtype;
+begin
+  if auth.uid() is null then
+    raise exception 'Not authenticated' using errcode = '28000';
+  end if;
+
+  select public._behavior_task_owner_id(p_task_id)
+  into v_owner_id;
+
+  if v_owner_id is null then
+    raise exception 'Task not found' using errcode = 'P0002';
+  end if;
+
+  if auth.uid() <> v_owner_id and not public._behavior_is_coach_for_user(v_owner_id) then
+    raise exception 'Access denied for task update' using errcode = '42501';
+  end if;
+
+  update public.plan_items
+  set title = coalesce(v_title, title),
+      description = coalesce(v_description, description),
+      scheduled_at = coalesce(p_scheduled_at, scheduled_at),
+      task_category = coalesce(v_category, task_category),
+      updated_at = now()
+  where id = p_task_id
+  returning * into v_row;
+
+  return v_row;
+end;
+$$;
+
+create or replace function public.complete_task(
+  p_task_id uuid,
+  p_request_key text default null,
+  p_metadata jsonb default '{}'::jsonb
+)
+returns void
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_owner_id uuid;
+begin
+  if auth.uid() is null then
+    raise exception 'Not authenticated' using errcode = '28000';
+  end if;
+
+  select public._behavior_task_owner_id(p_task_id)
+  into v_owner_id;
+
+  if v_owner_id is null then
+    raise exception 'Task not found' using errcode = 'P0002';
+  end if;
+
+  if v_owner_id <> auth.uid() then
+    raise exception 'Access denied for completing task' using errcode = '42501';
+  end if;
+
+  perform public._behavior_append_task_event(
+    p_task_id := p_task_id,
+    p_actor_user_id := v_owner_id,
+    p_event_type := 'completed',
+    p_event_source := 'user',
+    p_metadata := p_metadata,
+    p_request_key := p_request_key,
+    p_completed := true
+  );
+end;
+$$;
+
+create or replace function public.skip_task(
+  p_task_id uuid,
+  p_request_key text default null,
+  p_metadata jsonb default '{}'::jsonb
+)
+returns void
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_owner_id uuid;
+begin
+  if auth.uid() is null then
+    raise exception 'Not authenticated' using errcode = '28000';
+  end if;
+
+  select public._behavior_task_owner_id(p_task_id)
+  into v_owner_id;
+
+  if v_owner_id is null then
+    raise exception 'Task not found' using errcode = 'P0002';
+  end if;
+
+  if v_owner_id <> auth.uid() then
+    raise exception 'Access denied for skipping task' using errcode = '42501';
+  end if;
+
+  perform public._behavior_append_task_event(
+    p_task_id := p_task_id,
+    p_actor_user_id := v_owner_id,
+    p_event_type := 'skipped',
+    p_event_source := 'user',
+    p_metadata := p_metadata,
+    p_request_key := p_request_key,
+    p_skipped := true
+  );
+end;
+$$;
+
+create or replace function public.reopen_task(
+  p_task_id uuid,
+  p_request_key text default null,
+  p_metadata jsonb default '{}'::jsonb
+)
+returns void
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_owner_id uuid;
+begin
+  if auth.uid() is null then
+    raise exception 'Not authenticated' using errcode = '28000';
+  end if;
+
+  select public._behavior_task_owner_id(p_task_id)
+  into v_owner_id;
+
+  if v_owner_id is null then
+    raise exception 'Task not found' using errcode = 'P0002';
+  end if;
+
+  if auth.uid() <> v_owner_id and not public._behavior_is_coach_for_user(v_owner_id) then
+    raise exception 'Access denied for reopening task' using errcode = '42501';
+  end if;
+
+  perform public._behavior_append_task_event(
+    p_task_id := p_task_id,
+    p_actor_user_id := v_owner_id,
+    p_event_type := 'reopened',
+    p_event_source := case when auth.uid() = v_owner_id then 'user' else 'coach' end,
+    p_metadata := jsonb_strip_nulls(p_metadata || jsonb_build_object('request_key', p_request_key, 'reopener_id', auth.uid())),
+    p_request_key := p_request_key
+  );
 end;
 $$;
 
@@ -1085,14 +1472,15 @@ using (
   or public._behavior_is_coach_for_user(user_id)
 );
 
-drop policy if exists "plans_insert_coach_only" on public.plans;
+drop policy if exists "plans_insert_own_or_coach" on public.plans;
 
-create policy "plans_insert_coach_only"
+create policy "plans_insert_own_or_coach"
 on public.plans
 for insert
 to authenticated
 with check (
-  public._behavior_is_coach_for_user(user_id)
+  user_id = auth.uid()
+  or public._behavior_is_coach_for_user(user_id)
 );
 
 drop policy if exists "plans_update_own_or_coach" on public.plans;
@@ -1120,6 +1508,49 @@ using (
   public._behavior_is_coach_for_user(user_id)
 );
 
+create or replace function public.get_or_create_active_plan(
+  p_user_id uuid,
+  p_week_start date default null
+)
+returns public.plans
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_week_start date := coalesce(p_week_start, current_date - (extract(isodow from current_date)::int - 1));
+  v_plan public.plans%rowtype;
+begin
+  if auth.uid() is null then
+    raise exception 'Not authenticated' using errcode = '28000';
+  end if;
+
+  if p_user_id is null then
+    raise exception 'User is required' using errcode = '23502';
+  end if;
+
+  if auth.uid() <> p_user_id and not public._behavior_is_coach_for_user(p_user_id) then
+    raise exception 'Access denied for active plan' using errcode = '42501';
+  end if;
+
+  select *
+  into v_plan
+  from public.plans
+  where user_id = p_user_id
+    and week_start = v_week_start
+  order by created_at desc, id desc
+  limit 1;
+
+  if v_plan.id is null then
+    insert into public.plans (user_id, week_start)
+    values (p_user_id, v_week_start)
+    returning * into v_plan;
+  end if;
+
+  return v_plan;
+end;
+$$;
+
 create table if not exists public.plan_items (
   id uuid primary key default gen_random_uuid(),
   plan_id uuid references public.plans(id) on delete cascade,
@@ -1128,13 +1559,19 @@ create table if not exists public.plan_items (
   status text default 'pending',
   created_at timestamp default now(),
   updated_at timestamp default now(),
-  proof_image text
+  proof_image text,
+  scheduled_at timestamp with time zone,
+  task_category text,
+  archived_at timestamp with time zone
 );
 
 alter table public.plan_items
   add column if not exists description text,
   add column if not exists created_at timestamp default now(),
-  add column if not exists updated_at timestamp default now();
+  add column if not exists updated_at timestamp default now(),
+  add column if not exists scheduled_at timestamp with time zone,
+  add column if not exists task_category text,
+  add column if not exists archived_at timestamp with time zone;
 
 alter table public.plan_items
   alter column status set default 'pending';
@@ -1149,6 +1586,10 @@ alter table public.plan_items
 update public.plan_items
 set status = 'pending'
 where status is null or trim(status) = '';
+
+update public.plan_items
+set archived_at = null
+where archived_at is not null;
 
 alter table public.plan_items
   alter column status set not null;
@@ -1244,12 +1685,53 @@ using (
   )
 );
 
+create or replace function public._behavior_block_plan_item_status_mutation()
+returns trigger
+language plpgsql
+as $$
+begin
+  if not public._behavior_can_write_projection() and new.status is distinct from old.status then
+    raise exception 'plan_items.status is derived' using errcode = '42501';
+  end if;
+
+  return new;
+end;
+$$;
+
+drop trigger if exists plan_items_block_status_mutation on public.plan_items;
+create trigger plan_items_block_status_mutation
+before update on public.plan_items
+for each row execute function public._behavior_block_plan_item_status_mutation();
+
+drop trigger if exists plan_items_archive_on_delete on public.plan_items;
+create or replace function public._behavior_archive_plan_item()
+returns trigger
+language plpgsql
+as $$
+begin
+  if public._behavior_is_maintenance_actor() then
+    return old;
+  end if;
+
+  update public.plan_items
+  set archived_at = now(),
+      updated_at = now()
+  where id = old.id;
+
+  return null;
+end;
+$$;
+
+create trigger plan_items_archive_on_delete
+before delete on public.plan_items
+for each row execute function public._behavior_archive_plan_item();
+
 alter table public.task_activity
   drop constraint if exists task_activity_task_id_fkey;
 
 alter table public.task_activity
   add constraint task_activity_task_id_fkey
-  foreign key (task_id) references public.plan_items(id) on delete cascade not valid;
+  foreign key (task_id) references public.plan_items(id) on delete set null not valid;
 
 create table if not exists public.conversations (
   id uuid primary key default gen_random_uuid(),
@@ -1929,6 +2411,13 @@ language sql
 immutable
 as $$
   select case lower(coalesce(nullif(btrim(p_event_type), ''), ''))
+    when 'task_created' then 'task_created'
+    when 'task_completed' then 'task_completed'
+    when 'task_skipped' then 'task_skipped'
+    when 'task_reopened' then 'task_reopened'
+    when 'task_auto_closed' then 'task_auto_closed'
+    when 'coach_recommended_task' then 'coach_recommended_task'
+    when 'created' then 'task_created'
     when 'completed' then 'task_completed'
     when 'skipped' then 'task_skipped'
     when 'reopened' then 'task_reopened'
@@ -1966,6 +2455,7 @@ as $$
 declare
   v_title text := public._behavior_clean_text(p_task_title);
   v_action text := case lower(coalesce(nullif(btrim(p_event_type), ''), ''))
+    when 'task_created' then 'Created'
     when 'task_completed' then 'Completed'
     when 'task_skipped' then 'Skipped'
     when 'task_reopened' then 'Reopened'
@@ -1996,6 +2486,69 @@ begin
 
   return format('%s %s task', v_action, v_title);
 end;
+$$;
+
+create or replace function public._behavior_task_status_from_event_type(p_event_type text)
+returns text
+language sql
+immutable
+as $$
+  select case lower(coalesce(nullif(btrim(p_event_type), ''), ''))
+    when 'task_created' then 'pending'
+    when 'task_completed' then 'done'
+    when 'task_skipped' then 'pending'
+    when 'task_reopened' then 'in_progress'
+    when 'task_auto_closed' then 'pending'
+    else null
+  end;
+$$;
+
+create or replace function public._behavior_task_request_key(
+  p_task_id uuid,
+  p_action text,
+  p_request_key text default null
+)
+returns text
+language sql
+immutable
+as $$
+  select lower(coalesce(nullif(btrim(p_request_key), ''), format('task:%s:%s', p_task_id, coalesce(nullif(btrim(p_action), ''), 'event'))));
+$$;
+
+create or replace function public._behavior_task_owner_id(p_task_id uuid)
+returns uuid
+language sql
+stable
+security definer
+set search_path = public, pg_temp
+as $$
+  select p.user_id
+  from public.plan_items pi
+  join public.plans p on p.id = pi.plan_id
+  where pi.id = p_task_id
+  limit 1;
+$$;
+
+create or replace function public._behavior_is_maintenance_actor()
+returns boolean
+language sql
+stable
+security definer
+set search_path = public, pg_temp
+as $$
+  select coalesce(current_user in ('postgres', 'service_role'), false)
+    or coalesce(lower(coalesce(current_setting('request.jwt.claims', true)::jsonb ->> 'role', '')), '') = 'service_role';
+$$;
+
+create or replace function public._behavior_can_write_projection()
+returns boolean
+language sql
+stable
+security definer
+set search_path = public, pg_temp
+as $$
+  select public._behavior_is_maintenance_actor()
+    or coalesce(current_setting('app.behavior_projection', true), '') = '1';
 $$;
 
 create or replace function public._behavior_checkin_summary(
@@ -2635,6 +3188,7 @@ alter table public.behavior_events
   add constraint behavior_events_event_type_check
   check (
     event_type in (
+      'task_created',
       'task_completed',
       'task_skipped',
       'task_reopened',
@@ -2821,6 +3375,7 @@ begin
   end if;
 
   if v_event_type not in (
+    'task_created',
     'task_completed',
     'task_skipped',
     'task_reopened',

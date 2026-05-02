@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+import '../../plan/active_plan_repository.dart';
 import '../../plan/plan_item_details_page.dart';
 
 class CoachPlanEditorPage extends StatefulWidget {
@@ -25,6 +26,7 @@ class _CoachPlanEditorPageState extends State<CoachPlanEditorPage> {
   String? _errorMessage;
   String? _planId;
   String? _weekStartLabel;
+  String? _weekStartValue;
   List<PlanItemData> _items = <PlanItemData>[];
 
   String get _displayClientId => widget.clientId.trim();
@@ -58,6 +60,7 @@ class _CoachPlanEditorPageState extends State<CoachPlanEditorPage> {
         _errorMessage = 'План пока недоступен';
         _planId = null;
         _weekStartLabel = null;
+        _weekStartValue = null;
         _items = <PlanItemData>[];
       });
       return;
@@ -71,33 +74,31 @@ class _CoachPlanEditorPageState extends State<CoachPlanEditorPage> {
     }
 
     try {
-      final Map<String, dynamic>? planRow = await _client
-          .from('plans')
-          .select('id, user_id, week_start, created_at')
-          .eq('user_id', clientId)
-          .order('created_at', ascending: false)
-          .limit(1)
-          .maybeSingle();
-
-      final Map<String, dynamic> resolvedPlanRow =
-          planRow ?? await _createPlan(clientId);
-      final String planId = resolvedPlanRow['id']?.toString() ?? '';
-      final String weekStartLabel = _formatDateLabel(
-        resolvedPlanRow['week_start']?.toString(),
+      final Map<String, dynamic>? planRow = await loadOrCreateActivePlanRow(
+        client: _client,
+        userId: clientId,
+        sourceLabel: 'coach-plan-editor',
       );
 
-      final List<dynamic> rows = await _client
-          .from('plan_items')
-          .select('id, plan_id, title, description, status, created_at')
-          .eq('plan_id', planId);
+      final String? planId = planRow?['id']?.toString();
+      final String weekStartLabel = _formatDateLabel(planRow?['week_start']?.toString());
+      final String weekStartValue = planRow?['week_start']?.toString() ?? '';
+
+      final List<Map<String, dynamic>> rows = planId == null || planId.isEmpty
+          ? <Map<String, dynamic>>[]
+          : await loadActivePlanItemRows(
+              client: _client,
+              planId: planId,
+              sourceLabel: 'coach-plan-editor',
+            );
 
       final List<PlanItemData> items = rows
-          .map((dynamic rowData) => PlanItemData.fromMap(rowData as Map<String, dynamic>))
+          .map((Map<String, dynamic> rowData) => PlanItemData.fromMap(rowData))
           .toList()
         ..sort(_compareItemsByCreatedAt);
 
       debugPrint(
-        'COACH PLAN LOAD SUCCESS: clientId=$clientId planId=$planId items=${items.length}',
+        'COACH PLAN LOAD SUCCESS: clientId=$clientId planId=${planId ?? ''} items=${items.length}',
       );
 
       if (!mounted) {
@@ -109,6 +110,7 @@ class _CoachPlanEditorPageState extends State<CoachPlanEditorPage> {
         _errorMessage = null;
         _planId = planId;
         _weekStartLabel = weekStartLabel;
+        _weekStartValue = weekStartValue;
         _items = items;
       });
     } catch (error) {
@@ -122,26 +124,10 @@ class _CoachPlanEditorPageState extends State<CoachPlanEditorPage> {
         _errorMessage = 'План пока недоступен';
         _planId = null;
         _weekStartLabel = null;
+        _weekStartValue = null;
         _items = <PlanItemData>[];
       });
     }
-  }
-
-  Future<Map<String, dynamic>> _createPlan(String clientId) async {
-    final String weekStart = _formatDatabaseDate(_startOfWeek(DateTime.now()));
-    debugPrint('COACH PLAN CREATE START: clientId=$clientId weekStart=$weekStart');
-
-    final Map<String, dynamic> inserted =
-        await _client.from('plans').insert(<String, dynamic>{
-      'user_id': clientId,
-      'week_start': weekStart,
-    }).select('id, user_id, week_start, created_at').single();
-
-    debugPrint(
-      'COACH PLAN CREATE SUCCESS: clientId=$clientId planId=${inserted['id']}',
-    );
-
-    return inserted;
   }
 
   Future<void> _openItemEditor({PlanItemData? item}) async {
@@ -168,17 +154,10 @@ class _CoachPlanEditorPageState extends State<CoachPlanEditorPage> {
     PlanItemData? item,
   }) async {
     final String clientId = _displayClientId;
-    final String planId = _planId ?? '';
-
-    if (planId.isEmpty) {
-      debugPrint('COACH PLAN ITEM SAVE ERROR: clientId=$clientId planId is empty');
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('План пока не загружен')),
-        );
-      }
-      return;
-    }
+    String planId = _planId ?? '';
+    final String weekStartValue = _weekStartValue?.trim().isNotEmpty == true
+        ? _weekStartValue!.trim()
+        : _formatDatabaseDate(_startOfWeek(DateTime.now()));
 
     if (!mounted) {
       return;
@@ -194,40 +173,47 @@ class _CoachPlanEditorPageState extends State<CoachPlanEditorPage> {
           'COACH PLAN ITEM INSERT START: clientId=$clientId planId=$planId title=${draft.title}',
         );
 
-        final Map<String, dynamic> inserted = await _client
-            .from('plan_items')
-            .insert(<String, dynamic>{
-          'plan_id': planId,
-          'title': draft.title,
-          'description': draft.description,
-          'status': draft.status,
-          'updated_at': DateTime.now().toIso8601String(),
-        }).select('id, plan_id, title, description, status, created_at').single();
+        if (_planId == null || _planId!.isEmpty) {
+          final Map<String, dynamic>? activePlan = await loadOrCreateActivePlanRow(
+            client: _client,
+            userId: clientId,
+            sourceLabel: 'coach-plan-editor-save',
+          );
 
-        final PlanItemData newItem = PlanItemData.fromMap(inserted);
-        debugPrint(
-          'COACH PLAN ITEM INSERT SUCCESS: clientId=$clientId itemId=${newItem.id}',
+          _planId = activePlan?['id']?.toString();
+          planId = _planId ?? '';
+        }
+
+        await _client.rpc(
+          'create_plan_item',
+          params: <String, dynamic>{
+            'p_client_id': clientId,
+            'p_title': draft.title,
+            'p_description': draft.description.isEmpty ? null : draft.description,
+            'p_week_start': weekStartValue,
+            'p_request_key': _requestKey('create', clientId: clientId, itemId: 'new'),
+          },
         );
-        _upsertLocalItem(newItem);
+
+        debugPrint('COACH PLAN ITEM INSERT SUCCESS: clientId=$clientId planId=$planId');
+        await _loadPlan();
       } else {
         debugPrint(
           'COACH PLAN ITEM UPDATE START: clientId=$clientId itemId=${item.id}',
         );
 
-        final Map<String, dynamic> updated = await _client
-            .from('plan_items')
-            .update(<String, dynamic>{
-          'title': draft.title,
-          'description': draft.description,
-          'status': draft.status,
-          'updated_at': DateTime.now().toIso8601String(),
-        }).eq('id', item.id).select('id, plan_id, title, description, status, created_at').single();
-
-        final PlanItemData updatedItem = PlanItemData.fromMap(updated);
-        debugPrint(
-          'COACH PLAN ITEM UPDATE SUCCESS: clientId=$clientId itemId=${updatedItem.id}',
+        await _client.rpc(
+          'update_plan_item',
+          params: <String, dynamic>{
+            'p_task_id': item.id,
+            'p_title': draft.title,
+            'p_description': draft.description.isEmpty ? null : draft.description,
+            'p_request_key': _requestKey('update', clientId: clientId, itemId: item.id),
+          },
         );
-        _upsertLocalItem(updatedItem);
+
+        debugPrint('COACH PLAN ITEM UPDATE SUCCESS: clientId=$clientId itemId=${item.id}');
+        await _loadPlan();
       }
 
       if (!mounted) {
@@ -255,6 +241,14 @@ class _CoachPlanEditorPageState extends State<CoachPlanEditorPage> {
         });
       }
     }
+  }
+
+  String _requestKey(
+    String action, {
+    required String clientId,
+    required String itemId,
+  }) {
+    return 'coach_plan:$action:$clientId:$itemId:${DateTime.now().microsecondsSinceEpoch}';
   }
 
   Future<void> _deleteItem(PlanItemData item) async {
@@ -311,7 +305,7 @@ class _CoachPlanEditorPageState extends State<CoachPlanEditorPage> {
         'COACH PLAN ITEM DELETE SUCCESS: clientId=$clientId itemId=${item.id}',
       );
 
-      _removeLocalItem(item.id);
+      await _loadPlan();
 
       if (!mounted) {
         return;
@@ -336,37 +330,6 @@ class _CoachPlanEditorPageState extends State<CoachPlanEditorPage> {
         });
       }
     }
-  }
-
-  void _upsertLocalItem(PlanItemData item) {
-    final List<PlanItemData> nextItems = List<PlanItemData>.from(_items);
-    final int index = nextItems.indexWhere((PlanItemData value) => value.id == item.id);
-
-    if (index == -1) {
-      nextItems.add(item);
-    } else {
-      nextItems[index] = item;
-    }
-
-    nextItems.sort(_compareItemsByCreatedAt);
-
-    if (!mounted) {
-      return;
-    }
-
-    setState(() {
-      _items = nextItems;
-    });
-  }
-
-  void _removeLocalItem(String itemId) {
-    if (!mounted) {
-      return;
-    }
-
-    setState(() {
-      _items = _items.where((PlanItemData item) => item.id != itemId).toList();
-    });
   }
 
   int _compareItemsByCreatedAt(PlanItemData left, PlanItemData right) {
@@ -823,12 +786,10 @@ class _CoachPlanItemDraft {
   const _CoachPlanItemDraft({
     required this.title,
     required this.description,
-    required this.status,
   });
 
   final String title;
   final String description;
-  final String status;
 }
 
 class _CoachPlanItemEditorDialog extends StatefulWidget {
@@ -841,22 +802,14 @@ class _CoachPlanItemEditorDialog extends StatefulWidget {
 }
 
 class _CoachPlanItemEditorDialogState extends State<_CoachPlanItemEditorDialog> {
-  static const List<DropdownMenuItem<String>> _statusItems = <DropdownMenuItem<String>>[
-    DropdownMenuItem<String>(value: 'pending', child: Text('Намечен')),
-    DropdownMenuItem<String>(value: 'in_progress', child: Text('В работе')),
-    DropdownMenuItem<String>(value: 'done', child: Text('Шаг выполнен')),
-  ];
-
   late final TextEditingController _titleController;
   late final TextEditingController _descriptionController;
-  late String _status;
 
   @override
   void initState() {
     super.initState();
     _titleController = TextEditingController(text: widget.item?.title ?? '');
     _descriptionController = TextEditingController(text: widget.item?.description ?? '');
-    _status = widget.item?.normalizedStatus ?? 'pending';
   }
 
   @override
@@ -881,7 +834,6 @@ class _CoachPlanItemEditorDialogState extends State<_CoachPlanItemEditorDialog> 
       _CoachPlanItemDraft(
         title: title,
         description: description,
-        status: _status,
       ),
     );
   }
@@ -910,22 +862,6 @@ class _CoachPlanItemEditorDialogState extends State<_CoachPlanItemEditorDialog> 
                 maxLines: 5,
                 decoration: const InputDecoration(
                   labelText: 'Описание',
-                ),
-              ),
-              const SizedBox(height: 12),
-              DropdownButtonFormField<String>(
-                initialValue: _status,
-                items: _statusItems,
-                onChanged: (String? value) {
-                  if (value == null) {
-                    return;
-                  }
-                  setState(() {
-                    _status = value;
-                  });
-                },
-                decoration: const InputDecoration(
-                  labelText: 'Статус',
                 ),
               ),
             ],

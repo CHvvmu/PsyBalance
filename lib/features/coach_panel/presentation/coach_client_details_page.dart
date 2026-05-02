@@ -1,9 +1,12 @@
+import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../../../core/widgets/identity_avatar.dart';
+import '../../../core/navigation/app_route_observer.dart';
+import '../../plan/active_plan_repository.dart';
 import 'coach_route_args.dart';
 
 String _text(Map<String, dynamic>? row, String key, {String fallback = ''}) {
@@ -878,7 +881,8 @@ class CoachClientDetailsPage extends StatefulWidget {
   State<CoachClientDetailsPage> createState() => _CoachClientDetailsPageState();
 }
 
-class _CoachClientDetailsPageState extends State<CoachClientDetailsPage> {
+class _CoachClientDetailsPageState extends State<CoachClientDetailsPage>
+    with RouteAware {
   final SupabaseClient _client = Supabase.instance.client;
   final TextEditingController _notesController = TextEditingController();
   final ScrollController _scrollController = ScrollController();
@@ -888,6 +892,8 @@ class _CoachClientDetailsPageState extends State<CoachClientDetailsPage> {
   bool _notesDirty = false;
   String? _errorMessage;
   _ClientDetailsViewData? _data;
+
+  PageRoute<dynamic>? _route;
 
   String get _clientId => widget.clientId.trim();
 
@@ -914,7 +920,30 @@ class _CoachClientDetailsPageState extends State<CoachClientDetailsPage> {
   }
 
   @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+
+    final ModalRoute<dynamic>? modalRoute = ModalRoute.of(context);
+    if (modalRoute is PageRoute<dynamic> && modalRoute != _route) {
+      if (_route != null) {
+        appRouteObserver.unsubscribe(this);
+      }
+
+      _route = modalRoute;
+      appRouteObserver.subscribe(this, modalRoute);
+    }
+  }
+
+  @override
+  void didPopNext() {
+    unawaited(_loadDetails());
+  }
+
+  @override
   void dispose() {
+    if (_route != null) {
+      appRouteObserver.unsubscribe(this);
+    }
     _notesController.dispose();
     _scrollController.dispose();
     super.dispose();
@@ -1118,13 +1147,11 @@ class _CoachClientDetailsPageState extends State<CoachClientDetailsPage> {
 
   Future<Map<String, dynamic>?> _loadPlanRow(String clientId) async {
     try {
-      final Map<String, dynamic>? row = await _client
-          .from('plans')
-          .select('id, week_start, created_at')
-          .eq('user_id', clientId)
-          .order('created_at', ascending: false)
-          .limit(1)
-          .maybeSingle();
+      final Map<String, dynamic>? row = await loadOrCreateActivePlanRow(
+        client: _client,
+        userId: clientId,
+        sourceLabel: 'coach-client-details',
+      );
 
       debugPrint('CLIENT DETAILS PLAN LOADED: clientId=$clientId hasRow=${row != null}');
       return row;
@@ -1141,14 +1168,14 @@ class _CoachClientDetailsPageState extends State<CoachClientDetailsPage> {
 
   Future<List<Map<String, dynamic>>> _loadPlanItems(String planId) async {
     try {
-      final List<dynamic> rows = await _client
-          .from('plan_items')
-          .select('id, title, description, status, created_at, updated_at')
-          .eq('plan_id', planId)
-          .order('created_at', ascending: false);
+      final List<Map<String, dynamic>> rows = await loadActivePlanItemRows(
+        client: _client,
+        planId: planId,
+        sourceLabel: 'coach-client-details',
+      );
 
       debugPrint('CLIENT DETAILS PLAN ITEMS LOADED: planId=$planId count=${rows.length}');
-      return rows.cast<Map<String, dynamic>>();
+      return rows;
     } on PostgrestException catch (error) {
       debugPrint(
         'CLIENT DETAILS PLAN ITEMS ERROR: message=${error.message} details=${error.details} hint=${error.hint}',

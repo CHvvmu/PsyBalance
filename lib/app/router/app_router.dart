@@ -443,7 +443,7 @@ class AppRouter {
   MaterialPageRoute<dynamic> _buildClientPlanRoute() {
     return MaterialPageRoute<dynamic>(
       settings: const RouteSettings(name: clientPlan),
-      builder: (_) => const ActivityPlanPage(title: 'План активности'),
+      builder: (_) => const ClientPlanPage(),
     );
   }
 

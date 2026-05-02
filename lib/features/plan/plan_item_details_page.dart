@@ -2,6 +2,8 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+import 'active_plan_repository.dart';
+
 class PlanItemData {
   const PlanItemData({
     required this.id,
@@ -10,6 +12,8 @@ class PlanItemData {
     required this.description,
     required this.status,
     required this.createdAt,
+    required this.scheduledAt,
+    required this.category,
   });
 
   final String id;
@@ -18,15 +22,64 @@ class PlanItemData {
   final String description;
   final String status;
   final DateTime? createdAt;
+  final DateTime? scheduledAt;
+  final String category;
 
   factory PlanItemData.fromMap(Map<String, dynamic> row) {
+    final Map<String, dynamic>? metadata = row['metadata'] is Map
+        ? Map<String, dynamic>.from(row['metadata'] as Map)
+        : null;
+
+    String _textValue(List<Object?> values) {
+      for (final Object? value in values) {
+        final String text = value?.toString().trim() ?? '';
+        if (text.isNotEmpty) {
+          return text;
+        }
+      }
+
+      return '';
+    }
+
+    DateTime? _dateValue(List<Object?> values) {
+      for (final Object? value in values) {
+        final String text = value?.toString().trim() ?? '';
+        if (text.isEmpty) {
+          continue;
+        }
+
+        final DateTime? parsed = DateTime.tryParse(text);
+        if (parsed != null) {
+          return parsed;
+        }
+      }
+
+      return null;
+    }
+
     return PlanItemData(
       id: row['id']?.toString() ?? '',
       planId: row['plan_id']?.toString() ?? '',
-      title: row['title']?.toString().trim() ?? '',
-      description: row['description']?.toString().trim() ?? '',
+      title: _textValue(<Object?>[
+        row['title'],
+        metadata?['task_title'],
+      ]),
+      description: _textValue(<Object?>[
+        row['description'],
+        metadata?['task_description'],
+        metadata?['description'],
+      ]),
       status: row['status']?.toString().trim() ?? '',
       createdAt: DateTime.tryParse(row['created_at']?.toString() ?? ''),
+      scheduledAt: _dateValue(<Object?>[
+        row['scheduled_at'],
+        metadata?['scheduled_at'],
+      ]),
+      category: _textValue(<Object?>[
+        row['task_category'],
+        metadata?['task_category'],
+        metadata?['category'],
+      ]),
     );
   }
 
@@ -55,6 +108,94 @@ class PlanItemData {
         return 'Намечен';
     }
   }
+
+  String get displayScheduledLabel {
+    final DateTime? value = scheduledAt;
+    if (value == null) {
+      return 'Дата не указана';
+    }
+
+    final DateTime local = value.toLocal();
+    final String day = local.day.toString().padLeft(2, '0');
+    final String month = local.month.toString().padLeft(2, '0');
+    return '$day.$month.${local.year}';
+  }
+
+  String get displayCategoryLabel {
+    final String value = category.trim();
+    return value.isEmpty ? 'Без категории' : value;
+  }
+}
+
+Map<String, dynamic> _jsonMap(Object? value) {
+  if (value is Map) {
+    return Map<String, dynamic>.from(value as Map);
+  }
+
+  return <String, dynamic>{};
+}
+
+Future<Map<String, Map<String, dynamic>>> loadPlanItemMetadataByTaskId(
+  SupabaseClient client,
+  Iterable<String> taskIds,
+) async {
+  final List<String> uniqueIds = taskIds
+      .map((String value) => value.trim())
+      .where((String value) => value.isNotEmpty)
+      .toSet()
+      .toList();
+
+  if (uniqueIds.isEmpty) {
+    return <String, Map<String, dynamic>>{};
+  }
+
+  final List<dynamic> rows = await client
+      .from('task_activity')
+      .select('task_id, metadata, task_snapshot, created_at')
+      .inFilter('task_id', uniqueIds)
+      .order('created_at', ascending: true);
+
+  final Map<String, Map<String, dynamic>> metadataByTaskId = <String, Map<String, dynamic>>{};
+
+  for (final dynamic rowData in rows) {
+    final Map<String, dynamic> row = rowData as Map<String, dynamic>;
+    final String taskId = row['task_id']?.toString().trim() ?? '';
+    if (taskId.isEmpty || metadataByTaskId.containsKey(taskId)) {
+      continue;
+    }
+
+    final Map<String, dynamic> merged = <String, dynamic>{}
+      ..addAll(_jsonMap(row['metadata']))
+      ..addAll(_jsonMap(row['task_snapshot']));
+
+    if (merged.isNotEmpty) {
+      metadataByTaskId[taskId] = merged;
+    }
+  }
+
+  return metadataByTaskId;
+}
+
+Future<List<PlanItemData>> buildPlanItemsFromProjectedRows({
+  required SupabaseClient client,
+  required List<Map<String, dynamic>> rows,
+}) async {
+  final Map<String, Map<String, dynamic>> metadataByTaskId =
+      await loadPlanItemMetadataByTaskId(
+    client,
+    rows.map((Map<String, dynamic> row) => row['id']?.toString() ?? ''),
+  );
+
+  return rows.map((Map<String, dynamic> row) {
+    final Map<String, dynamic> mergedRow = Map<String, dynamic>.from(row);
+    final String taskId = mergedRow['id']?.toString() ?? '';
+    final Map<String, dynamic>? metadata = metadataByTaskId[taskId];
+    if (metadata != null && metadata.isNotEmpty) {
+      mergedRow['metadata'] = metadata;
+    }
+
+    return PlanItemData.fromMap(mergedRow);
+  }).toList();
 }
 
 class PlanItemDetailsPage extends StatefulWidget {
@@ -106,6 +247,10 @@ class _PlanItemDetailsPageState extends State<PlanItemDetailsPage> {
     };
   }
 
+  String _buildRequestKey(String eventType) {
+    return 'plan_item:${widget.item.id}:$eventType:${DateTime.now().microsecondsSinceEpoch}';
+  }
+
   Widget _buildButtonChild(String eventType, String label) {
     if (_pendingEventType == eventType) {
       return const SizedBox(
@@ -120,17 +265,25 @@ class _PlanItemDetailsPageState extends State<PlanItemDetailsPage> {
 
   Future<PlanItemData?> _reloadProjectedItem() async {
     try {
-      final Map<String, dynamic>? row = await _client
-          .from('plan_items')
-          .select('id, plan_id, title, description, status, created_at')
-          .eq('id', widget.item.id)
-          .maybeSingle();
+      final Map<String, dynamic>? row = await loadPlanItemRowById(
+        client: _client,
+        itemId: widget.item.id,
+        sourceLabel: 'plan-item-details',
+      );
 
       if (row == null) {
         return null;
       }
 
-      return PlanItemData.fromMap(row);
+      final Map<String, dynamic> mergedRow = Map<String, dynamic>.from(row);
+      final Map<String, Map<String, dynamic>> metadataByTaskId =
+          await loadPlanItemMetadataByTaskId(_client, <String>[widget.item.id]);
+      final Map<String, dynamic>? metadata = metadataByTaskId[widget.item.id];
+      if (metadata != null && metadata.isNotEmpty) {
+        mergedRow['metadata'] = metadata;
+      }
+
+      return PlanItemData.fromMap(mergedRow);
     } catch (error) {
       debugPrint('TASK EVENT REFRESH WARNING: item_id=${widget.item.id}, error=$error');
       return null;
@@ -154,15 +307,43 @@ class _PlanItemDetailsPageState extends State<PlanItemDetailsPage> {
     });
 
     try {
-      await _client.rpc(
-        'record_task_event',
-        params: <String, dynamic>{
-          'task_id': widget.item.id,
-          'event_type': eventType,
-          'event_source': 'user',
-          'metadata': _buildTaskEventMetadata(trigger: trigger),
-        },
-      );
+      final String requestKey = _buildRequestKey(eventType);
+      final Map<String, dynamic> metadata = _buildTaskEventMetadata(trigger: trigger);
+
+      switch (eventType) {
+        case 'completed':
+          await _client.rpc(
+            'complete_task',
+            params: <String, dynamic>{
+              'p_task_id': widget.item.id,
+              'p_request_key': requestKey,
+              'p_metadata': metadata,
+            },
+          );
+          break;
+        case 'skipped':
+          await _client.rpc(
+            'skip_task',
+            params: <String, dynamic>{
+              'p_task_id': widget.item.id,
+              'p_request_key': requestKey,
+              'p_metadata': metadata,
+            },
+          );
+          break;
+        case 'reopened':
+          await _client.rpc(
+            'reopen_task',
+            params: <String, dynamic>{
+              'p_task_id': widget.item.id,
+              'p_request_key': requestKey,
+              'p_metadata': metadata,
+            },
+          );
+          break;
+        default:
+          throw StateError('Unsupported task event type: $eventType');
+      }
 
       final PlanItemData? refreshedItem = await _reloadProjectedItem();
       if (refreshedItem != null) {
@@ -269,6 +450,23 @@ class _PlanItemDetailsPageState extends State<PlanItemDetailsPage> {
                         ),
                       ),
                     ),
+                    const SizedBox(height: 16),
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      children: <Widget>[
+                        _InfoChip(
+                          icon: Icons.event_rounded,
+                          label: 'Дата',
+                          value: item.displayScheduledLabel,
+                        ),
+                        _InfoChip(
+                          icon: Icons.sell_outlined,
+                          label: 'Категория',
+                          value: item.displayCategoryLabel,
+                        ),
+                      ],
+                    ),
                     const SizedBox(height: 20),
                     Text(
                       'Описание',
@@ -328,6 +526,58 @@ class _PlanItemDetailsPageState extends State<PlanItemDetailsPage> {
             ],
           ),
         ),
+      ),
+    );
+  }
+}
+
+class _InfoChip extends StatelessWidget {
+  const _InfoChip({
+    required this.icon,
+    required this.label,
+    required this.value,
+  });
+
+  final IconData icon;
+  final String label;
+  final String value;
+
+  @override
+  Widget build(BuildContext context) {
+    final ThemeData theme = Theme.of(context);
+    final ColorScheme colors = theme.colorScheme;
+    final TextTheme textTheme = theme.textTheme;
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      decoration: BoxDecoration(
+        color: theme.scaffoldBackgroundColor,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: theme.dividerColor),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: <Widget>[
+          Icon(icon, size: 16, color: colors.primary),
+          const SizedBox(width: 8),
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: <Widget>[
+              Text(
+                label,
+                style: textTheme.labelSmall,
+              ),
+              Text(
+                value,
+                style: textTheme.labelLarge?.copyWith(
+                  color: colors.onSurface,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ],
+          ),
+        ],
       ),
     );
   }
