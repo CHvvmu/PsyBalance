@@ -30,7 +30,7 @@ class PlanItemData {
         ? Map<String, dynamic>.from(row['metadata'] as Map)
         : null;
 
-    String _textValue(List<Object?> values) {
+    String textValue(List<Object?> values) {
       for (final Object? value in values) {
         final String text = value?.toString().trim() ?? '';
         if (text.isNotEmpty) {
@@ -41,7 +41,7 @@ class PlanItemData {
       return '';
     }
 
-    DateTime? _dateValue(List<Object?> values) {
+    DateTime? dateValue(List<Object?> values) {
       for (final Object? value in values) {
         final String text = value?.toString().trim() ?? '';
         if (text.isEmpty) {
@@ -60,22 +60,22 @@ class PlanItemData {
     return PlanItemData(
       id: row['id']?.toString() ?? '',
       planId: row['plan_id']?.toString() ?? '',
-      title: _textValue(<Object?>[
+      title: textValue(<Object?>[
         row['title'],
         metadata?['task_title'],
       ]),
-      description: _textValue(<Object?>[
+      description: textValue(<Object?>[
         row['description'],
         metadata?['task_description'],
         metadata?['description'],
       ]),
       status: row['status']?.toString().trim() ?? '',
       createdAt: DateTime.tryParse(row['created_at']?.toString() ?? ''),
-      scheduledAt: _dateValue(<Object?>[
+      scheduledAt: dateValue(<Object?>[
         row['scheduled_at'],
         metadata?['scheduled_at'],
       ]),
-      category: _textValue(<Object?>[
+      category: textValue(<Object?>[
         row['task_category'],
         metadata?['task_category'],
         metadata?['category'],
@@ -129,7 +129,7 @@ class PlanItemData {
 
 Map<String, dynamic> _jsonMap(Object? value) {
   if (value is Map) {
-    return Map<String, dynamic>.from(value as Map);
+    return Map<String, dynamic>.from(value);
   }
 
   return <String, dynamic>{};

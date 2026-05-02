@@ -900,14 +900,14 @@ class _DailyPlanSection extends StatefulWidget {
   State<_DailyPlanSection> createState() => _DailyPlanSectionState();
 }
 
-class _DailyPlanSectionState extends State<_DailyPlanSection> {
+class _DailyPlanSectionState extends State<_DailyPlanSection> with RouteAware {
   final SupabaseClient _client = Supabase.instance.client;
+  PageRoute<dynamic>? _route;
 
   bool _isLoading = true;
   String? _errorMessage;
   String? _planId;
   String? _weekStartLabel;
-  String? _weekStartValue;
   List<PlanItemData> _items = <PlanItemData>[];
 
   @override
@@ -915,6 +915,43 @@ class _DailyPlanSectionState extends State<_DailyPlanSection> {
     super.initState();
     _loadPlan();
   }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+
+    final ModalRoute<dynamic>? modalRoute = ModalRoute.of(context);
+    if (modalRoute is PageRoute<dynamic> && modalRoute != _route) {
+      if (_route != null) {
+        appRouteObserver.unsubscribe(this);
+      }
+
+      _route = modalRoute;
+      appRouteObserver.subscribe(this, modalRoute);
+    }
+  }
+
+  @override
+  void didPopNext() {
+    if (_suppressNextPopReload) {
+      debugPrint('PLAN LOAD POP SKIP: source=dashboard-plan-section reason=detail_return_handled_locally');
+      return;
+    }
+
+    debugPrint('PLAN LOAD POP NEXT: source=dashboard-plan-section reload_requested=true');
+    _loadPlan();
+  }
+
+  @override
+  void dispose() {
+    if (_route != null) {
+      appRouteObserver.unsubscribe(this);
+    }
+
+    super.dispose();
+  }
+
+  bool _suppressNextPopReload = false;
 
   Future<void> _loadPlan() async {
     final User? currentUser = _client.auth.currentUser;
@@ -931,7 +968,6 @@ class _DailyPlanSectionState extends State<_DailyPlanSection> {
         _errorMessage = 'План появится после первых шагов';
         _planId = null;
         _weekStartLabel = null;
-        _weekStartValue = null;
         _items = <PlanItemData>[];
       });
       return;
@@ -954,7 +990,6 @@ class _DailyPlanSectionState extends State<_DailyPlanSection> {
           _errorMessage = null;
           _planId = null;
           _weekStartLabel = null;
-          _weekStartValue = null;
           _items = <PlanItemData>[];
         });
         return;
@@ -962,7 +997,6 @@ class _DailyPlanSectionState extends State<_DailyPlanSection> {
 
       final String planId = planRow['id']?.toString() ?? '';
       final String weekStartLabel = _formatWeekStart(planRow['week_start']?.toString());
-      final String weekStartValue = planRow['week_start']?.toString() ?? '';
 
       final List<Map<String, dynamic>> rows = await loadActivePlanItemRows(
         client: _client,
@@ -1000,7 +1034,6 @@ class _DailyPlanSectionState extends State<_DailyPlanSection> {
           _errorMessage = null;
           _planId = planId;
           _weekStartLabel = weekStartLabel;
-          _weekStartValue = weekStartValue;
           _items = <PlanItemData>[];
         });
         return;
@@ -1016,7 +1049,6 @@ class _DailyPlanSectionState extends State<_DailyPlanSection> {
         _errorMessage = null;
         _planId = planId;
         _weekStartLabel = weekStartLabel;
-        _weekStartValue = weekStartValue;
         _items = items;
       });
     } catch (error) {
@@ -1031,20 +1063,25 @@ class _DailyPlanSectionState extends State<_DailyPlanSection> {
         _items = <PlanItemData>[];
         _planId = null;
         _weekStartLabel = null;
-        _weekStartValue = null;
       });
     }
   }
 
   Future<void> _openItemDetails(PlanItemData item) async {
-    final bool? changed = await Navigator.of(context).push<bool>(
-      MaterialPageRoute<bool>(
-        builder: (_) => PlanItemDetailsPage(item: item),
-      ),
-    );
+    _suppressNextPopReload = true;
 
-    if (changed == true && mounted) {
-      await _loadPlan();
+    try {
+      final bool? changed = await Navigator.of(context).push<bool>(
+        MaterialPageRoute<bool>(
+          builder: (_) => PlanItemDetailsPage(item: item),
+        ),
+      );
+
+      if (changed == true && mounted) {
+        await _loadPlan();
+      }
+    } finally {
+      _suppressNextPopReload = false;
     }
   }
 

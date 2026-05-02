@@ -24,7 +24,6 @@ class _ClientPlanPageState extends State<ClientPlanPage> {
   String? _errorMessage;
   String? _planId;
   String? _weekStartLabel;
-  String? _weekStartValue;
   String? _realtimeUserId;
   List<PlanItemData> _items = <PlanItemData>[];
 
@@ -138,7 +137,6 @@ class _ClientPlanPageState extends State<ClientPlanPage> {
         _errorMessage = 'План доступен после входа в аккаунт';
         _planId = null;
         _weekStartLabel = null;
-        _weekStartValue = null;
         _items = <PlanItemData>[];
       });
       return;
@@ -172,7 +170,6 @@ class _ClientPlanPageState extends State<ClientPlanPage> {
           _errorMessage = null;
           _planId = null;
           _weekStartLabel = null;
-          _weekStartValue = null;
           _items = <PlanItemData>[];
         });
         return;
@@ -180,7 +177,6 @@ class _ClientPlanPageState extends State<ClientPlanPage> {
 
       final String planId = planRow['id']?.toString() ?? '';
       final String weekStartLabel = _formatWeekStart(planRow['week_start']?.toString());
-      final String weekStartValue = planRow['week_start']?.toString() ?? '';
 
       final List<Map<String, dynamic>> rows = await loadActivePlanItemRows(
         client: _client,
@@ -201,14 +197,13 @@ class _ClientPlanPageState extends State<ClientPlanPage> {
         return;
       }
 
-      setState(() {
-        _isLoading = false;
-        _errorMessage = null;
-        _planId = planId;
-        _weekStartLabel = weekStartLabel;
-        _weekStartValue = weekStartValue;
-        _items = items;
-      });
+        setState(() {
+          _isLoading = false;
+          _errorMessage = null;
+          _planId = planId;
+          _weekStartLabel = weekStartLabel;
+          _items = items;
+        });
     } catch (error) {
       debugPrint('CLIENT PLAN LOAD ERROR: userId=${currentUser.id} error=$error');
       if (!mounted) {
@@ -220,7 +215,6 @@ class _ClientPlanPageState extends State<ClientPlanPage> {
         _errorMessage = 'План пока недоступен';
         _planId = null;
         _weekStartLabel = null;
-        _weekStartValue = null;
         _items = <PlanItemData>[];
       });
     } finally {
