@@ -10,6 +10,16 @@ import 'coach_route_args.dart';
 
 enum _QueueLoadMode { initial, refresh, loadMore }
 
+enum _WorkqueueFilter {
+  all,
+  newAnswers,
+  attentionToday,
+  readNoReply,
+  staleActivity,
+  afterIntervention,
+  returnedAfterPause,
+}
+
 class _BadgePalette {
   const _BadgePalette({
     required this.background,
@@ -20,6 +30,25 @@ class _BadgePalette {
   final Color background;
   final Color border;
   final Color foreground;
+}
+
+class _WorkqueueDeltaChipData {
+  const _WorkqueueDeltaChipData({
+    required this.label,
+    required this.icon,
+    required this.tone,
+  });
+
+  final String label;
+  final IconData icon;
+  final _WorkqueueDeltaTone tone;
+}
+
+enum _WorkqueueDeltaTone {
+  neutral,
+  positive,
+  caution,
+  attention,
 }
 
 class _InterventionPreset {
@@ -122,20 +151,6 @@ String _formatRelativeDay(DateTime value) {
   return '${_daysLabel(days)} назад';
 }
 
-String _formatTime(DateTime value) {
-  final DateTime local = value.toLocal();
-  final String hour = local.hour.toString().padLeft(2, '0');
-  final String minute = local.minute.toString().padLeft(2, '0');
-  return '$hour:$minute';
-}
-
-String _formatDate(DateTime value) {
-  final DateTime local = value.toLocal();
-  final String day = local.day.toString().padLeft(2, '0');
-  final String month = local.month.toString().padLeft(2, '0');
-  return '$day.$month.${local.year}';
-}
-
 Map<String, dynamic> _jsonMap(Object? value) {
   if (value == null) {
     return <String, dynamic>{};
@@ -174,6 +189,28 @@ String _text(Map<String, dynamic>? row, String key, {String fallback = ''}) {
   final dynamic raw = row == null ? null : row[key];
   final String value = raw?.toString().trim() ?? '';
   return value.isEmpty ? fallback : value;
+}
+
+bool _isMissingSchemaLikeError(Object error) {
+  if (error is! PostgrestException) {
+    return false;
+  }
+
+  final StringBuffer buffer = StringBuffer(error.message);
+  final Object? details = error.details;
+  if (details != null) {
+    buffer.write(' ${details.toString()}');
+  }
+  final Object? hint = error.hint;
+  if (hint != null) {
+    buffer.write(' ${hint.toString()}');
+  }
+
+  final String message = buffer.toString().toLowerCase();
+  return message.contains('does not exist') ||
+      message.contains('column') ||
+      message.contains('relation') ||
+      message.contains('schema cache');
 }
 
 DateTime? _dateTime(Object? value) {
@@ -329,66 +366,6 @@ _BadgePalette _queueStatePaletteFor(String value) {
   }
 }
 
-String _attentionStateLabel(String value) {
-  switch (_normalizeKey(value)) {
-    case 'recovery_in_progress':
-      return 'Возврат в ритм';
-    case 'high_risk_silence':
-      return 'Долгая пауза';
-    case 'needs_support':
-      return 'Нужна поддержка';
-    case 'disengaging':
-      return 'Снижение вовлечённости';
-    case 'momentum_growth':
-      return 'Стабильный ритм';
-    case 'low_concern':
-      return 'В норме';
-    default:
-      return 'В норме';
-  }
-}
-
-_BadgePalette _attentionStatePaletteFor(String value) {
-  switch (_normalizeKey(value)) {
-    case 'recovery_in_progress':
-      return const _BadgePalette(
-        background: Color(0xFFE8F1FF),
-        border: Color(0xFFC9D8FF),
-        foreground: Color(0xFF1D4ED8),
-      );
-    case 'high_risk_silence':
-      return const _BadgePalette(
-        background: Color(0xFFFFF2DA),
-        border: Color(0xFFF2DCA8),
-        foreground: Color(0xFF9A6700),
-      );
-    case 'needs_support':
-      return const _BadgePalette(
-        background: Color(0xFFFFE8E8),
-        border: Color(0xFFF5B5B5),
-        foreground: Color(0xFFB42318),
-      );
-    case 'disengaging':
-      return const _BadgePalette(
-        background: Color(0xFFFFF4D9),
-        border: Color(0xFFF2D08A),
-        foreground: Color(0xFF9A6700),
-      );
-    case 'momentum_growth':
-      return const _BadgePalette(
-        background: Color(0xFFE4F7ED),
-        border: Color(0xFFB7E4CA),
-        foreground: Color(0xFF166534),
-      );
-    default:
-      return const _BadgePalette(
-        background: Color(0xFFF3F4F6),
-        border: Color(0xFFE5E7EB),
-        foreground: Color(0xFF6B7280),
-      );
-  }
-}
-
 String _recommendedActionLabel(String value) {
   switch (_normalizeKey(value)) {
     case 'soft_checkin':
@@ -517,20 +494,6 @@ String _windowActivityLabel(_BehaviorSnapshot snapshot) {
   )}';
 }
 
-String _interventionWindowLabel(_BehaviorSnapshot snapshot) {
-  return '${_countWithWord(
-    snapshot.coachInterventions14d,
-    one: 'интервенция',
-    few: 'интервенции',
-    many: 'интервенций',
-  )} · ${_countWithWord(
-    snapshot.interventionResponses14d,
-    one: 'ответ',
-    few: 'ответа',
-    many: 'ответов',
-  )}';
-}
-
 String _lastActivityLabel(_BehaviorSnapshot snapshot) {
   final DateTime? activity = snapshot.lastEventAt ?? snapshot.lastResponseAt ?? snapshot.latestCoachInterventionAt;
   if (activity == null) {
@@ -554,12 +517,90 @@ String _lastEventLabel(_BehaviorSnapshot snapshot) {
   return '${_eventLabel(snapshot.lastEventType)} · ${_formatRelativeDay(snapshot.lastEventAt!)}';
 }
 
-String _lastResponseLabel(_BehaviorSnapshot snapshot) {
-  if (snapshot.lastResponseAt == null) {
-    return 'Без ответа';
+List<_WorkqueueDeltaChipData> _buildDeltaChips(_CoachWorkqueueEntry entry) {
+  final _BehaviorSnapshot snapshot = entry.snapshot;
+  final List<_WorkqueueDeltaChipData> chips = <_WorkqueueDeltaChipData>[];
+
+  if (snapshot.returnAfterSilence) {
+    chips.add(
+      const _WorkqueueDeltaChipData(
+        label: 'Вернулся после паузы',
+        icon: Icons.arrow_upward_rounded,
+        tone: _WorkqueueDeltaTone.positive,
+      ),
+    );
   }
 
-  return _formatRelativeDay(snapshot.lastResponseAt!);
+  if (snapshot.readNoReply) {
+    chips.add(
+      const _WorkqueueDeltaChipData(
+        label: 'Прочитал без ответа',
+        icon: Icons.mark_chat_read_rounded,
+        tone: _WorkqueueDeltaTone.caution,
+      ),
+    );
+  }
+
+  if (snapshot.positiveMomentum) {
+    chips.add(
+      const _WorkqueueDeltaChipData(
+        label: 'Ритм усилился',
+        icon: Icons.trending_up_rounded,
+        tone: _WorkqueueDeltaTone.positive,
+      ),
+    );
+  }
+
+  if (snapshot.instability || snapshot.missedCheckin || snapshot.silenceDays >= 7) {
+    chips.add(
+      _WorkqueueDeltaChipData(
+        label: snapshot.recentInterventionNoResponse ? 'Нужен фоллоу-ап' : 'Есть снижение ритма',
+        icon: Icons.trending_down_rounded,
+        tone: _WorkqueueDeltaTone.attention,
+      ),
+    );
+  }
+
+  if (snapshot.silenceDays >= 7 && !chips.any((_WorkqueueDeltaChipData chip) => chip.label == 'Есть снижение ритма')) {
+    chips.add(
+      const _WorkqueueDeltaChipData(
+        label: 'Давно без активности',
+        icon: Icons.do_not_disturb_rounded,
+        tone: _WorkqueueDeltaTone.caution,
+      ),
+    );
+  }
+
+  return chips.take(3).toList(growable: false);
+}
+
+_BadgePalette _deltaChipPalette(_WorkqueueDeltaTone tone) {
+  switch (tone) {
+    case _WorkqueueDeltaTone.positive:
+      return const _BadgePalette(
+        background: Color(0xFFE8F3EC),
+        border: Color(0xFFC6E3D1),
+        foreground: Color(0xFF1F5133),
+      );
+    case _WorkqueueDeltaTone.caution:
+      return const _BadgePalette(
+        background: Color(0xFFFFF1E7),
+        border: Color(0xFFF5D3BA),
+        foreground: Color(0xFF8A4310),
+      );
+    case _WorkqueueDeltaTone.attention:
+      return const _BadgePalette(
+        background: Color(0xFFFDECEC),
+        border: Color(0xFFF2C7C7),
+        foreground: Color(0xFF9F2D2D),
+      );
+    case _WorkqueueDeltaTone.neutral:
+      return const _BadgePalette(
+        background: Color(0xFFF2F1EE),
+        border: Color(0xFFE1DDD6),
+        foreground: Color(0xFF4F483F),
+      );
+  }
 }
 
 String _draftForChat(_CoachWorkqueueEntry entry) {
@@ -707,6 +748,7 @@ class CoachWorkqueuePage extends StatefulWidget {
 
 class _CoachWorkqueuePageState extends State<CoachWorkqueuePage> {
   static const int _pageSize = 8;
+  static const String _scrollStorageKey = 'coach-workqueue-scroll';
 
   final SupabaseClient _client = Supabase.instance.client;
 
@@ -718,6 +760,8 @@ class _CoachWorkqueuePageState extends State<CoachWorkqueuePage> {
   bool _isLoadingMore = false;
   bool _hasMore = false;
   String? _errorMessage;
+  String? _partialFallbackMessage;
+  _WorkqueueFilter _selectedFilter = _WorkqueueFilter.all;
 
   String? _selectedEntryId;
   List<_CoachWorkqueueEntry> _entries = <_CoachWorkqueueEntry>[];
@@ -728,21 +772,8 @@ class _CoachWorkqueuePageState extends State<CoachWorkqueuePage> {
     unawaited(_loadQueue(_QueueLoadMode.initial));
   }
 
-  _CoachWorkqueueEntry? get _selectedEntry {
-    if (_entries.isEmpty) {
-      return null;
-    }
-
-    final String? selectedId = _selectedEntryId;
-    if (selectedId != null) {
-      for (final _CoachWorkqueueEntry entry in _entries) {
-        if (entry.id == selectedId) {
-          return entry;
-        }
-      }
-    }
-
-    return _entries.first;
+  List<_CoachWorkqueueEntry> get _filteredEntries {
+    return _entries.where(_matchesSelectedFilter).toList(growable: false);
   }
 
   int get _activeCount {
@@ -760,6 +791,52 @@ class _CoachWorkqueuePageState extends State<CoachWorkqueuePage> {
     }).length;
   }
 
+  int _countForFilter(_WorkqueueFilter filter) {
+    return _entries.where((_CoachWorkqueueEntry entry) => _matchesFilter(entry, filter)).length;
+  }
+
+  bool _matchesSelectedFilter(_CoachWorkqueueEntry entry) {
+    return _matchesFilter(entry, _selectedFilter);
+  }
+
+  bool _matchesFilter(_CoachWorkqueueEntry entry, _WorkqueueFilter filter) {
+    final String queueState = _normalizeKey(entry.queueState);
+    final _BehaviorSnapshot snapshot = entry.snapshot;
+    final bool isVisibleQueueState = queueState == 'active' || queueState == 'snoozed';
+
+    switch (filter) {
+      case _WorkqueueFilter.all:
+        return true;
+      case _WorkqueueFilter.newAnswers:
+        return isVisibleQueueState && _normalizeKey(entry.sourceEventType) == 'intervention_responded';
+      case _WorkqueueFilter.attentionToday:
+        return isVisibleQueueState &&
+            (snapshot.readNoReply ||
+                snapshot.recentInterventionNoResponse ||
+                snapshot.missedCheckin ||
+                snapshot.instability ||
+                snapshot.silenceDays >= 7);
+      case _WorkqueueFilter.readNoReply:
+        return isVisibleQueueState && snapshot.readNoReply;
+      case _WorkqueueFilter.staleActivity:
+        return isVisibleQueueState && snapshot.silenceDays >= 7;
+      case _WorkqueueFilter.afterIntervention:
+        return isVisibleQueueState && snapshot.recentInterventionNoResponse;
+      case _WorkqueueFilter.returnedAfterPause:
+        return isVisibleQueueState && snapshot.returnAfterSilence;
+    }
+  }
+
+  void _setFilter(_WorkqueueFilter filter) {
+    if (_selectedFilter == filter) {
+      return;
+    }
+
+    setState(() {
+      _selectedFilter = filter;
+    });
+  }
+
   Future<void> _loadQueue(_QueueLoadMode mode) async {
     final int requestId = ++_requestToken;
     final User? currentUser = _client.auth.currentUser;
@@ -774,6 +851,7 @@ class _CoachWorkqueuePageState extends State<CoachWorkqueuePage> {
         _hasMore = false;
         _selectedEntryId = null;
         _errorMessage = 'Не удалось определить текущего коуча';
+        _partialFallbackMessage = null;
         _isInitialLoading = false;
         _isRefreshing = false;
         _isLoadingMore = false;
@@ -799,6 +877,7 @@ class _CoachWorkqueuePageState extends State<CoachWorkqueuePage> {
     if (mounted) {
       setState(() {
         _errorMessage = null;
+        _partialFallbackMessage = null;
         _isInitialLoading = mode == _QueueLoadMode.initial && _entries.isEmpty;
         _isRefreshing = mode == _QueueLoadMode.refresh;
         _isLoadingMore = mode == _QueueLoadMode.loadMore;
@@ -806,17 +885,35 @@ class _CoachWorkqueuePageState extends State<CoachWorkqueuePage> {
     }
 
     try {
-      final List<dynamic> itemRows = await _client
-          .from('coach_workqueue_items')
-          .select(
-            'id, coach_id, user_id, priority_score, priority_level, queue_state, attention_reason, recommended_action, behavior_snapshot, metadata, source_event_id, source_event_type, created_at, updated_at, resolved_at, last_evaluated_at',
-          )
-          .eq('coach_id', currentUser.id)
-          .inFilter('queue_state', <String>['active', 'snoozed'])
-          .order('queue_state', ascending: true)
-          .order('priority_score', ascending: false)
-          .order('updated_at', ascending: false)
-          .range(0, fetchLimit - 1);
+      List<dynamic> itemRows = <dynamic>[];
+      bool usedFallbackQueueSource = false;
+
+      try {
+        itemRows = await _client
+            .from('coach_workqueue_items')
+            .select(
+              'id, coach_id, user_id, priority_score, priority_level, queue_state, attention_reason, recommended_action, behavior_snapshot, metadata, source_event_id, source_event_type, created_at, updated_at, resolved_at, last_evaluated_at',
+            )
+            .eq('coach_id', currentUser.id)
+            .inFilter('queue_state', <String>['active', 'snoozed'])
+            .order('queue_state', ascending: true)
+            .order('priority_score', ascending: false)
+            .order('updated_at', ascending: false)
+            .range(0, fetchLimit - 1);
+      } catch (error, stackTrace) {
+        debugPrint('COACH WORKQUEUE PRIMARY SOURCE ERROR: coachId=${currentUser.id} error=$error');
+        debugPrint('COACH WORKQUEUE PRIMARY SOURCE STACK: $stackTrace');
+
+        if (!_isMissingSchemaLikeError(error)) {
+          rethrow;
+        }
+
+        usedFallbackQueueSource = true;
+        itemRows = await _loadFallbackQueueRows(
+          coachId: currentUser.id,
+          fetchLimit: fetchLimit,
+        );
+      }
 
       if (!mounted || requestId != _requestToken) {
         return;
@@ -882,6 +979,9 @@ class _CoachWorkqueuePageState extends State<CoachWorkqueuePage> {
         _hasMore = hasMore;
         _selectedEntryId = selectedEntryId;
         _errorMessage = null;
+        _partialFallbackMessage = usedFallbackQueueSource
+            ? 'Часть behavioral сигналов временно недоступна. Очередь показана в упрощенном режиме.'
+            : null;
         _isInitialLoading = false;
         _isRefreshing = false;
         _isLoadingMore = false;
@@ -898,6 +998,7 @@ class _CoachWorkqueuePageState extends State<CoachWorkqueuePage> {
 
       setState(() {
         _errorMessage = 'Не удалось загрузить очередь';
+        _partialFallbackMessage = null;
         _isInitialLoading = false;
         _isRefreshing = false;
         _isLoadingMore = false;
@@ -919,6 +1020,160 @@ class _CoachWorkqueuePageState extends State<CoachWorkqueuePage> {
     }
 
     await _loadQueue(_QueueLoadMode.loadMore);
+  }
+
+  Future<List<dynamic>> _loadFallbackQueueRows({
+    required String coachId,
+    required int fetchLimit,
+  }) async {
+    final List<dynamic> relationRows = await _client
+        .from('clients')
+        .select('user_id, coach_id, created_at')
+        .eq('coach_id', coachId)
+        .order('created_at', ascending: false)
+        .range(0, fetchLimit - 1);
+
+    if (relationRows.isEmpty) {
+      return <dynamic>[];
+    }
+
+    final List<String> userIds = relationRows
+        .map((dynamic rowData) => (rowData as Map<String, dynamic>)['user_id']?.toString().trim() ?? '')
+        .where((String value) => value.isNotEmpty)
+        .toList(growable: false);
+
+    final Map<String, Map<String, dynamic>> usersById = <String, Map<String, dynamic>>{};
+    if (userIds.isNotEmpty) {
+      try {
+        final List<dynamic> userRows = await _client
+            .from('users')
+            .select(
+              'id, full_name, avatar_url, progress_status, last_activity_date, last_session_date, onboarding_completed, consistency_streak',
+            )
+            .inFilter('id', userIds);
+
+        for (final dynamic rowData in userRows) {
+          final Map<String, dynamic> row = rowData as Map<String, dynamic>;
+          final String userId = row['id']?.toString().trim() ?? '';
+          if (userId.isNotEmpty) {
+            usersById[userId] = row;
+          }
+        }
+      } catch (error, stackTrace) {
+        debugPrint('COACH WORKQUEUE FALLBACK USERS EXTENDED ERROR: $error');
+        debugPrint('COACH WORKQUEUE FALLBACK USERS EXTENDED STACK: $stackTrace');
+
+        final List<dynamic> userRows = await _client
+            .from('users')
+            .select('id, full_name, avatar_url')
+            .inFilter('id', userIds);
+
+        for (final dynamic rowData in userRows) {
+          final Map<String, dynamic> row = rowData as Map<String, dynamic>;
+          final String userId = row['id']?.toString().trim() ?? '';
+          if (userId.isNotEmpty) {
+            usersById[userId] = row;
+          }
+        }
+      }
+    }
+
+    final List<dynamic> fallbackRows = <dynamic>[];
+    for (final dynamic rowData in relationRows) {
+      final Map<String, dynamic> relationRow = rowData as Map<String, dynamic>;
+      final String userId = relationRow['user_id']?.toString().trim() ?? '';
+      if (userId.isEmpty) {
+        continue;
+      }
+
+      final Map<String, dynamic>? userRow = usersById[userId];
+      final DateTime? lastActivity = _dateTime(userRow?['last_activity_date']);
+      final DateTime? lastSession = _dateTime(userRow?['last_session_date']);
+      final DateTime createdAt = _dateTime(relationRow['created_at']) ?? DateTime.now();
+      final bool onboardingCompleted = _boolValue(userRow?['onboarding_completed']);
+      final String progressStatus = _text(userRow, 'progress_status');
+      final int consistencyStreak = _intValue(userRow?['consistency_streak']);
+      final DateTime? lastEventAt = <DateTime?>[lastActivity, lastSession, createdAt]
+          .whereType<DateTime>()
+          .fold<DateTime?>(null, (DateTime? current, DateTime next) {
+        if (current == null || next.isAfter(current)) {
+          return next;
+        }
+        return current;
+      });
+      final int silenceDays = lastEventAt == null
+          ? 999
+          : DateUtils.dateOnly(DateTime.now()).difference(DateUtils.dateOnly(lastEventAt)).inDays;
+      final bool inactive = silenceDays >= 7;
+      final bool onboarding = !onboardingCompleted && lastActivity == null && lastSession == null;
+      final String lastKnownStatus = progressStatus.trim().isNotEmpty
+          ? normalizeBehaviorStatus(progressStatus)
+          : (onboarding
+                ? 'onboarding'
+                : (inactive ? 'inactive' : 'engaged'));
+
+      fallbackRows.add(<String, dynamic>{
+        'id': 'fallback-$userId',
+        'coach_id': coachId,
+        'user_id': userId,
+        'priority_score': inactive ? 80 : (onboarding ? 55 : 40),
+        'priority_level': inactive ? 'high' : 'medium',
+        'queue_state': 'active',
+        'attention_reason': inactive
+            ? 'Клиент давно не проявлялся'
+            : (onboarding ? 'Клиент еще не завершил первые шаги' : 'Доступен базовый operational контекст'),
+        'recommended_action': inactive ? 'send_checkin' : 'open_chat',
+        'behavior_snapshot': <String, dynamic>{
+          'attention_state': inactive
+              ? 'high_risk_silence'
+              : (onboarding ? 'needs_support' : 'low_concern'),
+          'priority_level': inactive ? 'high' : 'medium',
+          'priority_score': inactive ? 80 : 40,
+          'recommended_action': inactive ? 'send_checkin' : 'open_chat',
+          'attention_reason': inactive
+              ? 'Клиент давно не проявлялся'
+              : (onboarding ? 'Клиент еще не завершил первые шаги' : 'Behavioral projection временно недоступен'),
+          'last_event_at': lastEventAt?.toIso8601String(),
+          'latest_checkin_at': null,
+          'latest_task_at': null,
+          'latest_message_at': null,
+          'latest_coach_intervention_at': null,
+          'silence_days': silenceDays < 0 ? 0 : silenceDays,
+          'baseline_window_days': 7,
+          'total_events_7d': 0,
+          'checkins_7d': 0,
+          'tasks_done_7d': 0,
+          'tasks_skipped_7d': 0,
+          'messages_sent_7d': 0,
+          'messages_read_7d': 0,
+          'coach_messages_sent_7d': 0,
+          'coach_interventions_14d': 0,
+          'intervention_responses_14d': 0,
+          'intervention_created_14d': 0,
+          'return_after_silence': false,
+          'positive_momentum': !inactive && !onboarding,
+          'instability': false,
+          'read_no_reply': false,
+          'recent_intervention_no_response': false,
+          'missed_checkin': inactive,
+          'progress_score': 0,
+          'engagement_level': 0,
+          'consistency_streak': consistencyStreak,
+          'days_since_last_activity': silenceDays < 0 ? 0 : silenceDays,
+          'last_known_status': lastKnownStatus.isEmpty ? 'onboarding' : lastKnownStatus,
+          'last_response_at': null,
+        },
+        'metadata': <String, dynamic>{'fallback_source': 'clients_users'},
+        'source_event_id': '',
+        'source_event_type': onboarding ? 'client_created' : 'behavior_fallback',
+        'created_at': createdAt.toIso8601String(),
+        'updated_at': (lastEventAt ?? createdAt).toIso8601String(),
+        'resolved_at': null,
+        'last_evaluated_at': DateTime.now().toIso8601String(),
+      });
+    }
+
+    return fallbackRows;
   }
 
   void _selectEntry(String entryId) {
@@ -1290,8 +1545,44 @@ class _CoachWorkqueuePageState extends State<CoachWorkqueuePage> {
   }
 
   PreferredSizeWidget _buildAppBar(BuildContext context) {
+    final ThemeData theme = Theme.of(context);
+    final ColorScheme colors = theme.colorScheme;
+
     return AppBar(
-      title: const Text('Рабочая очередь'),
+      automaticallyImplyLeading: false,
+      toolbarHeight: 72,
+      titleSpacing: 16,
+      title: Row(
+        children: <Widget>[
+          Icon(
+            Icons.psychology,
+            size: 20,
+            color: colors.primary,
+          ),
+          const SizedBox(width: 8),
+          Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: <Widget>[
+              Text(
+                'PsyBalance',
+                style: theme.textTheme.titleSmall?.copyWith(
+                  color: colors.onSurface,
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+              const SizedBox(height: 2),
+              Text(
+                'Рабочая очередь',
+                style: theme.textTheme.titleMedium?.copyWith(
+                  color: colors.onSurface,
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
       actions: <Widget>[
         IconButton(
           tooltip: 'Обновить',
@@ -1321,203 +1612,63 @@ class _CoachWorkqueuePageState extends State<CoachWorkqueuePage> {
   Widget _buildIntroSection(BuildContext context) {
     final ThemeData theme = Theme.of(context);
     final ColorScheme colors = theme.colorScheme;
-    final _CoachWorkqueueEntry? selectedEntry = _selectedEntry;
-    final DateTime? lastEvaluatedAt = selectedEntry?.lastEvaluatedAt;
 
     return _SectionCard(
-      title: 'Очередь внимания',
-      subtitle: 'Порционная загрузка, спокойные приоритеты и объяснимые сигналы.',
+      title: null,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: <Widget>[
           Text(
-            'Сначала показываем ближайшие по приоритету карточки. Можно выбрать клиента, отправить мягкий контакт, открыть чат или отложить запись на паузу.',
-            style: theme.textTheme.bodyMedium?.copyWith(
-              color: colors.onSurfaceVariant,
-              height: 1.45,
+            'Очередь внимания',
+            style: theme.textTheme.titleMedium?.copyWith(
+              color: colors.onSurface,
+              fontWeight: FontWeight.w800,
             ),
           ),
-          const SizedBox(height: 14),
-          Wrap(
-            spacing: 12,
-            runSpacing: 12,
-            children: <Widget>[
-              _StatCard(
-                title: 'Активные',
-                value: _activeCount.toString(),
-                subtitle: 'Карточки в фокусе',
-                icon: Icons.playlist_add_check_rounded,
-                accentColor: colors.primary,
-              ),
-              _StatCard(
-                title: 'На паузе',
-                value: _snoozedCount.toString(),
-                subtitle: 'Временно отложены',
-                icon: Icons.snooze_rounded,
-                accentColor: colors.secondary,
-              ),
-              _StatCard(
-                title: 'Высокий приоритет',
-                value: _urgentCount.toString(),
-                subtitle: 'Высокий и urgent',
-                icon: Icons.priority_high_rounded,
-                accentColor: const Color(0xFFB45309),
-              ),
-              _StatCard(
-                title: 'Загружено',
-                value: _entries.length.toString(),
-                subtitle: _hasMore ? 'Можно подгрузить еще' : 'Весь текущий список',
-                icon: Icons.view_list_rounded,
-                accentColor: lastEvaluatedAt == null ? colors.primary : colors.tertiary,
-              ),
-            ],
+          const SizedBox(height: 8),
+          Text(
+            'Карточки для быстрого ответа и дальнейшие действия.',
+            style: theme.textTheme.bodyMedium?.copyWith(
+              color: colors.onSurfaceVariant,
+              height: 1.4,
+            ),
           ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildSnapshotSection(BuildContext context, _CoachWorkqueueEntry entry) {
-    final ThemeData theme = Theme.of(context);
-    final ColorScheme colors = theme.colorScheme;
-    final _BadgePalette priorityPalette = _priorityPaletteFor(entry.priorityLevel);
-    final _BadgePalette statePalette = _attentionStatePaletteFor(entry.snapshot.attentionState);
-    final _BadgePalette statusPalette = _badgePaletteFromBehaviorStatus(
-      behaviorStatusPaletteFor(entry.snapshot.lastKnownStatus),
-    );
-
-    return _SectionCard(
-      title: 'Поведенческий снимок',
-      subtitle: 'Коротко, объяснимо и без скрытых оценок.',
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: <Widget>[
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: <Widget>[
-              IdentityAvatar(
-                displayName: entry.displayName,
-                avatarUrl: entry.avatarUrl,
-                size: 52,
-                backgroundColor: colors.primary.withValues(alpha: 0.14),
-                textColor: colors.onSurface,
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: <Widget>[
-                    Text(
-                      entry.displayName,
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                      style: theme.textTheme.titleMedium?.copyWith(
-                        color: colors.onSurface,
-                        fontWeight: FontWeight.w800,
-                      ),
-                    ),
-                    const SizedBox(height: 6),
-                    Text(
-                      _attentionSummary(entry.snapshot),
-                      style: theme.textTheme.bodyMedium?.copyWith(
-                        color: colors.onSurfaceVariant,
-                        height: 1.4,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              const SizedBox(width: 12),
-              Column(
-                crossAxisAlignment: CrossAxisAlignment.end,
-                children: <Widget>[
-                  _Badge(label: _priorityLabel(entry.priorityLevel), palette: priorityPalette),
-                  const SizedBox(height: 8),
-                  _Badge(label: _attentionStateLabel(entry.snapshot.attentionState), palette: statePalette),
-                ],
-              ),
-            ],
-          ),
-          const SizedBox(height: 14),
+          const SizedBox(height: 12),
           Wrap(
             spacing: 8,
             runSpacing: 8,
             children: <Widget>[
-              _Badge(
-                label: behaviorStatusLabel(entry.snapshot.lastKnownStatus),
-                palette: statusPalette,
+              _SummaryChip(
+                label: 'В фокусе',
+                value: _activeCount.toString(),
+                backgroundColor: const Color(0xFFE8F3EC),
+                borderColor: const Color(0xFFC6E3D1),
+                labelColor: const Color(0xFF4E6B57),
+                valueColor: const Color(0xFF1F5133),
               ),
-              _InfoChip(
-                icon: Icons.schedule_rounded,
-                label: 'Тишина: ${_silenceLabel(entry.snapshot.silenceDays)}',
-                backgroundColor: colors.surfaceContainerHighest.withValues(alpha: 0.12),
-                textColor: colors.onSurfaceVariant,
+              _SummaryChip(
+                label: 'На паузе',
+                value: _snoozedCount.toString(),
+                backgroundColor: const Color(0xFFF2F1EE),
+                borderColor: const Color(0xFFE1DDD6),
+                labelColor: const Color(0xFF6E675D),
+                valueColor: const Color(0xFF4F483F),
               ),
-              _InfoChip(
-                icon: Icons.local_fire_department_rounded,
-                label: 'Серия: ${_trendLabel(entry.snapshot)}',
-                backgroundColor: colors.surfaceContainerHighest.withValues(alpha: 0.12),
-                textColor: colors.onSurfaceVariant,
+              _SummaryChip(
+                label: 'Срочно',
+                value: _urgentCount.toString(),
+                backgroundColor: const Color(0xFFFFF1E7),
+                borderColor: const Color(0xFFF5D3BA),
+                labelColor: const Color(0xFFA05A1F),
+                valueColor: const Color(0xFF8A4310),
               ),
-              _InfoChip(
-                icon: Icons.history_rounded,
-                label: 'Последний сигнал: ${_lastEventLabel(entry.snapshot)}',
-                backgroundColor: colors.surfaceContainerHighest.withValues(alpha: 0.12),
-                textColor: colors.onSurfaceVariant,
-              ),
-              _InfoChip(
-                icon: Icons.arrow_forward_rounded,
-                label: 'Следующий шаг: ${_recommendedActionLabel(entry.recommendedAction)}',
-                backgroundColor: priorityPalette.background,
-                textColor: priorityPalette.foreground,
-              ),
-              _InfoChip(
-                icon: Icons.today_rounded,
-                label: 'Последняя активность: ${_lastActivityLabel(entry.snapshot)}',
-                backgroundColor: colors.surfaceContainerHighest.withValues(alpha: 0.12),
-                textColor: colors.onSurfaceVariant,
-              ),
-              if (entry.snapshot.lastResponseAt != null)
-                _InfoChip(
-                  icon: Icons.reply_rounded,
-                  label: 'Последний ответ: ${_lastResponseLabel(entry.snapshot)}',
-                  backgroundColor: colors.surfaceContainerHighest.withValues(alpha: 0.12),
-                  textColor: colors.onSurfaceVariant,
-                ),
-            ],
-          ),
-          const SizedBox(height: 14),
-          Wrap(
-            spacing: 12,
-            runSpacing: 12,
-            children: <Widget>[
-              _StatCard(
-                title: '7 дней',
-                value: _windowActivityLabel(entry.snapshot),
-                subtitle: 'Чек-ины и завершённые задачи',
-                icon: Icons.insights_rounded,
-                accentColor: colors.primary,
-              ),
-              _StatCard(
-                title: '14 дней',
-                value: _interventionWindowLabel(entry.snapshot),
-                subtitle: 'Интервенции и ответы',
-                icon: Icons.forum_outlined,
-                accentColor: colors.secondary,
-              ),
-              _StatCard(
-                title: 'Статус',
-                value: behaviorStatusLabel(entry.snapshot.lastKnownStatus),
-                subtitle: 'Последний известный статус',
-                icon: Icons.verified_rounded,
-                accentColor: statusPalette.foreground,
-              ),
-              _StatCard(
-                title: 'Последняя оценка',
-                value: _formatDate(entry.lastEvaluatedAt),
-                subtitle: _formatTime(entry.lastEvaluatedAt),
-                icon: Icons.update_rounded,
-                accentColor: colors.tertiary,
+              _SummaryChip(
+                label: 'Всего',
+                value: _entries.length.toString(),
+                backgroundColor: const Color(0xFFF3F1F8),
+                borderColor: const Color(0xFFE0D9EE),
+                labelColor: const Color(0xFF6E6386),
+                valueColor: const Color(0xFF4A3F62),
               ),
             ],
           ),
@@ -1532,34 +1683,150 @@ class _CoachWorkqueuePageState extends State<CoachWorkqueuePage> {
 
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 16),
-      child: Row(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: <Widget>[
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: <Widget>[
-                Text(
-                  'Клиенты в очереди',
-                  style: theme.textTheme.titleMedium?.copyWith(
-                    color: colors.onSurface,
-                    fontWeight: FontWeight.w800,
-                  ),
+          Row(
+            children: <Widget>[
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: <Widget>[
+                    Text(
+                      'Клиенты в очереди',
+                      style: theme.textTheme.titleMedium?.copyWith(
+                        color: colors.onSurface,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      'Карточки можно выбрать без навигации, чтобы быстро свериться со сводкой.',
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: colors.onSurfaceVariant,
+                      ),
+                    ),
+                  ],
                 ),
-                const SizedBox(height: 4),
-                Text(
-                  'Карточки можно выбрать без навигации, чтобы быстро свериться со сводкой.',
-                  style: theme.textTheme.bodySmall?.copyWith(
-                    color: colors.onSurfaceVariant,
-                  ),
-                ),
-              ],
+              ),
+              const SizedBox(width: 12),
+              TextButton.icon(
+                onPressed: widget.onOpenClients,
+                icon: const Icon(Icons.people_alt_rounded),
+                label: const Text('Список клиентов'),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Container(
+            padding: const EdgeInsets.all(8),
+            decoration: BoxDecoration(
+              color: colors.surfaceContainerHighest.withValues(alpha: 0.18),
+              borderRadius: BorderRadius.circular(22),
+              border: Border.all(color: theme.dividerColor.withValues(alpha: 0.55)),
+            ),
+            child: SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: Row(
+                children: <Widget>[
+                  _buildFilterChip(context, filter: _WorkqueueFilter.all, label: 'Все'),
+                  const SizedBox(width: 8),
+                  _buildFilterChip(context, filter: _WorkqueueFilter.newAnswers, label: 'Новые ответы'),
+                  const SizedBox(width: 8),
+                  _buildFilterChip(context, filter: _WorkqueueFilter.attentionToday, label: 'Требует внимания сегодня'),
+                  const SizedBox(width: 8),
+                  _buildFilterChip(context, filter: _WorkqueueFilter.readNoReply, label: 'Прочитал без ответа'),
+                  const SizedBox(width: 8),
+                  _buildFilterChip(context, filter: _WorkqueueFilter.staleActivity, label: 'Давно без активности'),
+                  const SizedBox(width: 8),
+                  _buildFilterChip(context, filter: _WorkqueueFilter.afterIntervention, label: 'После интервенции'),
+                  const SizedBox(width: 8),
+                  _buildFilterChip(context, filter: _WorkqueueFilter.returnedAfterPause, label: 'Вернулся после паузы'),
+                ],
+              ),
             ),
           ),
-          const SizedBox(width: 12),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildFilterChip(
+    BuildContext context, {
+    required _WorkqueueFilter filter,
+    required String label,
+  }) {
+    final ThemeData theme = Theme.of(context);
+    final ColorScheme colors = theme.colorScheme;
+    final bool isSelected = _selectedFilter == filter;
+    final int count = _countForFilter(filter);
+
+    return InkWell(
+      onTap: () => _setFilter(filter),
+      borderRadius: BorderRadius.circular(999),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+        decoration: BoxDecoration(
+          color: isSelected ? colors.primary.withValues(alpha: 0.14) : colors.surface.withValues(alpha: 0.92),
+          borderRadius: BorderRadius.circular(999),
+          border: Border.all(
+            color: isSelected ? colors.primary.withValues(alpha: 0.3) : theme.dividerColor.withValues(alpha: 0.55),
+          ),
+          boxShadow: isSelected
+              ? <BoxShadow>[
+                  BoxShadow(
+                    color: colors.primary.withValues(alpha: 0.08),
+                    blurRadius: 12,
+                    offset: const Offset(0, 4),
+                  ),
+                ]
+              : null,
+        ),
+        child: Text(
+          '$label · $count',
+          style: theme.textTheme.labelMedium?.copyWith(
+            color: isSelected ? colors.primary : colors.onSurfaceVariant,
+            fontWeight: FontWeight.w700,
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildFilteredEmptyState(BuildContext context) {
+    final ThemeData theme = Theme.of(context);
+    final ColorScheme colors = theme.colorScheme;
+
+    return Container(
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        color: colors.surface,
+        borderRadius: BorderRadius.circular(24),
+        border: Border.all(color: theme.dividerColor.withValues(alpha: 0.7)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          Text(
+            'Для этого фильтра пока нет карточек',
+            style: theme.textTheme.titleSmall?.copyWith(
+              color: colors.onSurface,
+              fontWeight: FontWeight.w800,
+            ),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            'Попробуйте соседний сегмент или вернитесь к полному списку без перезагрузки очереди.',
+            style: theme.textTheme.bodyMedium?.copyWith(
+              color: colors.onSurfaceVariant,
+              height: 1.4,
+            ),
+          ),
+          const SizedBox(height: 12),
           TextButton.icon(
-            onPressed: widget.onOpenClients,
-            icon: const Icon(Icons.people_alt_rounded),
-            label: const Text('Список клиентов'),
+            onPressed: () => _setFilter(_WorkqueueFilter.all),
+            icon: const Icon(Icons.filter_alt_off_rounded),
+            label: const Text('Показать все'),
           ),
         ],
       ),
@@ -1570,11 +1837,20 @@ class _CoachWorkqueuePageState extends State<CoachWorkqueuePage> {
     final ThemeData theme = Theme.of(context);
     final ColorScheme colors = theme.colorScheme;
     final _BadgePalette priorityPalette = _priorityPaletteFor(entry.priorityLevel);
+    final _BadgePalette statusPalette = _badgePaletteFromBehaviorStatus(
+      behaviorStatusPaletteFor(entry.snapshot.lastKnownStatus),
+    );
     final bool isSelected = entry.id == _selectedEntryId;
     final Color borderColor = isSelected ? priorityPalette.border : theme.dividerColor.withValues(alpha: 0.7);
     final Color backgroundColor = isSelected
         ? priorityPalette.background.withValues(alpha: 0.14)
         : colors.surface;
+    final String changeLabel = entry.attentionReason.trim().isNotEmpty ? entry.attentionReason.trim() : entry.latestEventLabel;
+    final String summaryLabel = entry.behaviorSummary.trim().isNotEmpty
+        ? entry.behaviorSummary.trim()
+        : 'Сигналов пока мало, но карточку уже можно использовать для спокойного следующего контакта.';
+    final String nextActionLabel = entry.nextStepLabel.trim().isNotEmpty ? entry.nextStepLabel.trim() : 'Наблюдение';
+    final List<_WorkqueueDeltaChipData> deltaChips = _buildDeltaChips(entry);
 
     return Material(
       color: backgroundColor,
@@ -1624,6 +1900,21 @@ class _CoachWorkqueuePageState extends State<CoachWorkqueuePage> {
                             height: 1.35,
                           ),
                         ),
+                        const SizedBox(height: 8),
+                        Wrap(
+                          spacing: 8,
+                          runSpacing: 8,
+                          children: <Widget>[
+                            _Badge(
+                              label: _queueStateLabel(entry.queueState),
+                              palette: _queueStatePaletteFor(entry.queueState),
+                            ),
+                            _Badge(
+                              label: behaviorStatusLabel(entry.snapshot.lastKnownStatus),
+                              palette: statusPalette,
+                            ),
+                          ],
+                        ),
                       ],
                     ),
                   ),
@@ -1632,20 +1923,56 @@ class _CoachWorkqueuePageState extends State<CoachWorkqueuePage> {
                     crossAxisAlignment: CrossAxisAlignment.end,
                     children: <Widget>[
                       _Badge(label: _priorityLabel(entry.priorityLevel), palette: priorityPalette),
-                      if (_normalizeKey(entry.queueState) == 'snoozed') ...<Widget>[
-                        const SizedBox(height: 8),
-                        _Badge(
-                          label: _queueStateLabel(entry.queueState),
-                          palette: _queueStatePaletteFor(entry.queueState),
-                        ),
-                      ],
                     ],
                   ),
                 ],
               ),
               const SizedBox(height: 12),
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: colors.surfaceContainerHighest.withValues(alpha: 0.14),
+                  borderRadius: BorderRadius.circular(18),
+                ),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: <Widget>[
+                    Icon(
+                      Icons.compare_arrows_rounded,
+                      size: 18,
+                      color: colors.primary,
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: <Widget>[
+                          Text(
+                            'Что изменилось',
+                            style: theme.textTheme.labelMedium?.copyWith(
+                              color: colors.onSurface,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            changeLabel,
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                            style: theme.textTheme.bodyMedium?.copyWith(
+                              color: colors.onSurfaceVariant,
+                              height: 1.4,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 12),
               Text(
-                entry.behaviorSummary,
+                summaryLabel,
                 maxLines: 3,
                 overflow: TextOverflow.ellipsis,
                 style: theme.textTheme.bodyMedium?.copyWith(
@@ -1653,6 +1980,23 @@ class _CoachWorkqueuePageState extends State<CoachWorkqueuePage> {
                   height: 1.45,
                 ),
               ),
+              if (deltaChips.isNotEmpty) ...<Widget>[
+                const SizedBox(height: 12),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: deltaChips.map((_WorkqueueDeltaChipData chip) {
+                    final _BadgePalette palette = _deltaChipPalette(chip.tone);
+                    return _InfoChip(
+                      icon: chip.icon,
+                      label: chip.label,
+                      backgroundColor: palette.background,
+                      textColor: palette.foreground,
+                      borderColor: palette.border,
+                    );
+                  }).toList(growable: false),
+                ),
+              ],
               const SizedBox(height: 12),
               Wrap(
                 spacing: 8,
@@ -1660,19 +2004,13 @@ class _CoachWorkqueuePageState extends State<CoachWorkqueuePage> {
                 children: <Widget>[
                   _InfoChip(
                     icon: Icons.arrow_forward_rounded,
-                    label: 'Шаг: ${entry.nextStepLabel}',
+                    label: 'Следующее действие: $nextActionLabel',
                     backgroundColor: priorityPalette.background,
                     textColor: priorityPalette.foreground,
                   ),
                   _InfoChip(
                     icon: Icons.history_rounded,
-                    label: 'Активность: ${entry.lastMeaningfulActivityLabel}',
-                    backgroundColor: colors.surfaceContainerHighest.withValues(alpha: 0.12),
-                    textColor: colors.onSurfaceVariant,
-                  ),
-                  _InfoChip(
-                    icon: Icons.local_fire_department_rounded,
-                    label: 'Серия: ${entry.streakTrendLabel}',
+                    label: 'Последний сигнал: ${entry.latestEventLabel}',
                     backgroundColor: colors.surfaceContainerHighest.withValues(alpha: 0.12),
                     textColor: colors.onSurfaceVariant,
                   ),
@@ -1683,11 +2021,18 @@ class _CoachWorkqueuePageState extends State<CoachWorkqueuePage> {
                     textColor: colors.onSurfaceVariant,
                   ),
                   _InfoChip(
-                    icon: Icons.bolt_rounded,
-                    label: 'Сигнал: ${entry.latestEventLabel}',
+                    icon: Icons.local_fire_department_rounded,
+                    label: 'Серия: ${entry.streakTrendLabel}',
                     backgroundColor: colors.surfaceContainerHighest.withValues(alpha: 0.12),
                     textColor: colors.onSurfaceVariant,
                   ),
+                  if (entry.snapshot.totalEvents7d > 0 || entry.snapshot.checkins7d > 0 || entry.snapshot.tasksDone7d > 0)
+                    _InfoChip(
+                      icon: Icons.insights_rounded,
+                      label: 'Ритм: ${_windowActivityLabel(entry.snapshot)}',
+                      backgroundColor: colors.surfaceContainerHighest.withValues(alpha: 0.12),
+                      textColor: colors.onSurfaceVariant,
+                    ),
                 ],
               ),
               const SizedBox(height: 14),
@@ -1888,6 +2233,42 @@ class _CoachWorkqueuePageState extends State<CoachWorkqueuePage> {
     );
   }
 
+  Widget _buildPartialFallbackNotice(BuildContext context) {
+    final ThemeData theme = Theme.of(context);
+    final ColorScheme colors = theme.colorScheme;
+
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: colors.surfaceContainerHighest.withValues(alpha: 0.18),
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: theme.dividerColor.withValues(alpha: 0.7)),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          Icon(
+            Icons.info_outline_rounded,
+            color: colors.primary,
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Text(
+              _partialFallbackMessage!,
+              style: theme.textTheme.bodyMedium?.copyWith(
+                color: colors.onSurfaceVariant,
+              ),
+            ),
+          ),
+          TextButton(
+            onPressed: _retryQueue,
+            child: const Text('Обновить'),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildLoadMoreFooter(BuildContext context) {
     final ThemeData theme = Theme.of(context);
     final ColorScheme colors = theme.colorScheme;
@@ -1939,7 +2320,7 @@ class _CoachWorkqueuePageState extends State<CoachWorkqueuePage> {
 
   @override
   Widget build(BuildContext context) {
-    final ThemeData theme = Theme.of(context);
+    final List<_CoachWorkqueueEntry> filteredEntries = _filteredEntries;
 
     if (_isInitialLoading && _entries.isEmpty) {
       return Scaffold(
@@ -1953,6 +2334,7 @@ class _CoachWorkqueuePageState extends State<CoachWorkqueuePage> {
       body: RefreshIndicator(
         onRefresh: _refreshQueue,
         child: CustomScrollView(
+          key: const PageStorageKey<String>(_scrollStorageKey),
           physics: const AlwaysScrollableScrollPhysics(parent: BouncingScrollPhysics()),
           slivers: <Widget>[
             if (_isRefreshing)
@@ -1966,72 +2348,45 @@ class _CoachWorkqueuePageState extends State<CoachWorkqueuePage> {
                   child: _buildIntroSection(context),
                 ),
               ),
-              if (_errorMessage != null)
+              if (_partialFallbackMessage != null)
                 SliverPadding(
                   padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
                   sliver: SliverToBoxAdapter(
-                    child: Container(
-                      padding: const EdgeInsets.all(14),
-                      decoration: BoxDecoration(
-                        color: theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.18),
-                        borderRadius: BorderRadius.circular(18),
-                        border: Border.all(color: theme.dividerColor.withValues(alpha: 0.7)),
-                      ),
-                      child: Row(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: <Widget>[
-                          Icon(
-                            Icons.info_outline_rounded,
-                            color: theme.colorScheme.primary,
-                          ),
-                          const SizedBox(width: 12),
-                          Expanded(
-                            child: Text(
-                              _errorMessage!,
-                              style: theme.textTheme.bodyMedium?.copyWith(
-                                color: theme.colorScheme.onSurfaceVariant,
-                              ),
-                            ),
-                          ),
-                          TextButton(
-                            onPressed: _retryQueue,
-                            child: const Text('Повторить'),
-                          ),
-                        ],
-                      ),
-                    ),
+                    child: _buildPartialFallbackNotice(context),
                   ),
                 ),
-              SliverPadding(
-                padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
-                sliver: SliverToBoxAdapter(
-                  child: _buildSnapshotSection(context, _selectedEntry ?? _entries.first),
-                ),
-              ),
               SliverPadding(
                 padding: const EdgeInsets.fromLTRB(16, 16, 16, 12),
                 sliver: SliverToBoxAdapter(
                   child: _buildQueueHeader(context),
                 ),
               ),
-              SliverPadding(
-                padding: const EdgeInsets.fromLTRB(16, 0, 16, 0),
-                sliver: SliverList(
-                  delegate: SliverChildBuilderDelegate(
-                    (BuildContext context, int index) {
-                      final _CoachWorkqueueEntry entry = _entries[index];
-                      return Padding(
-                        padding: EdgeInsets.only(bottom: index == _entries.length - 1 ? 0 : 12),
-                        child: _buildQueueCard(context, entry),
-                      );
-                    },
-                    childCount: _entries.length,
+              if (filteredEntries.isNotEmpty) ...<Widget>[
+                SliverPadding(
+                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 0),
+                  sliver: SliverList(
+                    delegate: SliverChildBuilderDelegate(
+                      (BuildContext context, int index) {
+                        final _CoachWorkqueueEntry entry = filteredEntries[index];
+                        return Padding(
+                          padding: EdgeInsets.only(bottom: index == filteredEntries.length - 1 ? 0 : 12),
+                          child: _buildQueueCard(context, entry),
+                        );
+                      },
+                      childCount: filteredEntries.length,
+                    ),
                   ),
                 ),
-              ),
-              SliverToBoxAdapter(
-                child: _buildLoadMoreFooter(context),
-              ),
+                SliverToBoxAdapter(
+                  child: _buildLoadMoreFooter(context),
+                ),
+              ] else
+                SliverPadding(
+                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 24),
+                  sliver: SliverToBoxAdapter(
+                    child: _buildFilteredEmptyState(context),
+                  ),
+                ),
             ] else ...<Widget>[
               if (_errorMessage != null)
                 SliverFillRemaining(
@@ -2273,7 +2628,7 @@ class _SectionCard extends StatelessWidget {
     this.subtitle,
   });
 
-  final String title;
+  final String? title;
   final String? subtitle;
   final Widget child;
 
@@ -2292,24 +2647,26 @@ class _SectionCard extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: <Widget>[
-          Text(
-            title,
-            style: theme.textTheme.titleMedium?.copyWith(
-              color: colors.onSurface,
-              fontWeight: FontWeight.w800,
-            ),
-          ),
-          if (subtitle != null) ...<Widget>[
-            const SizedBox(height: 4),
+          if (title?.trim().isNotEmpty == true) ...<Widget>[
             Text(
-              subtitle!,
-              style: theme.textTheme.bodySmall?.copyWith(
-                color: colors.onSurfaceVariant,
-                height: 1.35,
+              title!,
+              style: theme.textTheme.titleMedium?.copyWith(
+                color: colors.onSurface,
+                fontWeight: FontWeight.w800,
               ),
             ),
+            if (subtitle != null) ...<Widget>[
+              const SizedBox(height: 4),
+              Text(
+                subtitle!,
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: colors.onSurfaceVariant,
+                  height: 1.35,
+                ),
+              ),
+            ],
+            const SizedBox(height: 14),
           ],
-          const SizedBox(height: 14),
           child,
         ],
       ),
@@ -2317,73 +2674,58 @@ class _SectionCard extends StatelessWidget {
   }
 }
 
-class _StatCard extends StatelessWidget {
-  const _StatCard({
-    required this.title,
+class _SummaryChip extends StatelessWidget {
+  const _SummaryChip({
+    required this.label,
     required this.value,
-    this.subtitle,
-    this.icon,
-    this.accentColor,
+    this.backgroundColor,
+    this.borderColor,
+    this.labelColor,
+    this.valueColor,
   });
 
-  final String title;
+  final String label;
   final String value;
-  final String? subtitle;
-  final IconData? icon;
-  final Color? accentColor;
+  final Color? backgroundColor;
+  final Color? borderColor;
+  final Color? labelColor;
+  final Color? valueColor;
 
   @override
   Widget build(BuildContext context) {
     final ThemeData theme = Theme.of(context);
     final ColorScheme colors = theme.colorScheme;
-    final Color accent = accentColor ?? colors.primary;
+    final Color resolvedBackground = backgroundColor ?? colors.surfaceContainerHighest.withValues(alpha: 0.35);
+    final Color resolvedBorder = borderColor ?? theme.dividerColor.withValues(alpha: 0.7);
+    final Color resolvedLabelColor = labelColor ?? colors.onSurfaceVariant;
+    final Color resolvedValueColor = valueColor ?? colors.onSurface;
 
     return Container(
-      constraints: const BoxConstraints(minWidth: 150),
-      padding: const EdgeInsets.all(14),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
       decoration: BoxDecoration(
-        color: colors.surfaceContainerHighest.withValues(alpha: 0.15),
-        borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: theme.dividerColor.withValues(alpha: 0.7)),
+        color: resolvedBackground,
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: resolvedBorder),
       ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: <Widget>[
-          if (icon != null)
-            Align(
-              alignment: Alignment.topRight,
-              child: Icon(icon, size: 18, color: accent.withValues(alpha: 0.85)),
+      child: RichText(
+        text: TextSpan(
+          children: <InlineSpan>[
+            TextSpan(
+              text: '$label ',
+              style: theme.textTheme.labelMedium?.copyWith(
+                color: resolvedLabelColor,
+                fontWeight: FontWeight.w600,
+              ),
             ),
-          Text(
-            title,
-            style: theme.textTheme.labelSmall?.copyWith(
-              color: colors.onSurfaceVariant,
-              fontWeight: FontWeight.w700,
-            ),
-          ),
-          const SizedBox(height: 6),
-          Text(
-            value,
-            maxLines: 2,
-            overflow: TextOverflow.ellipsis,
-            style: theme.textTheme.titleMedium?.copyWith(
-              color: colors.onSurface,
-              fontWeight: FontWeight.w800,
-            ),
-          ),
-          if (subtitle != null) ...<Widget>[
-            const SizedBox(height: 4),
-            Text(
-              subtitle!,
-              maxLines: 2,
-              overflow: TextOverflow.ellipsis,
-              style: theme.textTheme.bodySmall?.copyWith(
-                color: colors.onSurfaceVariant,
-                height: 1.25,
+            TextSpan(
+              text: value,
+              style: theme.textTheme.labelMedium?.copyWith(
+                color: resolvedValueColor,
+                fontWeight: FontWeight.w800,
               ),
             ),
           ],
-        ],
+        ),
       ),
     );
   }
@@ -2426,12 +2768,14 @@ class _InfoChip extends StatelessWidget {
     required this.label,
     required this.backgroundColor,
     required this.textColor,
+    this.borderColor,
   });
 
   final IconData icon;
   final String label;
   final Color backgroundColor;
   final Color textColor;
+  final Color? borderColor;
 
   @override
   Widget build(BuildContext context) {
@@ -2442,6 +2786,7 @@ class _InfoChip extends StatelessWidget {
       decoration: BoxDecoration(
         color: backgroundColor,
         borderRadius: BorderRadius.circular(999),
+        border: borderColor == null ? null : Border.all(color: borderColor!),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,

@@ -10,11 +10,13 @@ class CoachClientsPage extends StatefulWidget {
     super.key,
     required this.onOpenClient,
     required this.onOpenChat,
+    required this.onOpenWorkqueue,
     required this.onOpenProfile,
   });
 
   final ValueChanged<CoachClientRouteArgs> onOpenClient;
   final ValueChanged<CoachClientRouteArgs> onOpenChat;
+  final VoidCallback onOpenWorkqueue;
   final VoidCallback onOpenProfile;
 
   @override
@@ -287,24 +289,6 @@ class _CoachClientsPageState extends State<CoachClientsPage> {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: <Widget>[
-                        Row(
-                          children: <Widget>[
-                            Icon(
-                              Icons.psychology,
-                              size: 24,
-                              color: colors.primary,
-                            ),
-                            const SizedBox(width: 8),
-                            Text(
-                              'PsyBalance',
-                              style: textTheme.titleLarge?.copyWith(
-                                color: colors.onSurface,
-                                fontWeight: FontWeight.w800,
-                              ),
-                            ),
-                          ],
-                        ),
-                        const SizedBox(height: 6),
                         Text(
                           'Мои подопечные',
                           style: textTheme.headlineMedium?.copyWith(
@@ -323,6 +307,26 @@ class _CoachClientsPageState extends State<CoachClientsPage> {
                   Row(
                     mainAxisSize: MainAxisSize.min,
                     children: <Widget>[
+                      InkWell(
+                        borderRadius: BorderRadius.circular(16),
+                        onTap: widget.onOpenWorkqueue,
+                        child: Container(
+                          width: 44,
+                          height: 44,
+                          decoration: BoxDecoration(
+                            color: colors.surface,
+                            borderRadius: BorderRadius.circular(16),
+                            border: Border.all(color: theme.dividerColor),
+                          ),
+                          alignment: Alignment.center,
+                          child: Icon(
+                            Icons.arrow_back_rounded,
+                            size: 20,
+                            color: colors.onSurface,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 10),
                       InkWell(
                         borderRadius: BorderRadius.circular(16),
                         onTap: widget.onOpenProfile,
@@ -528,44 +532,38 @@ class _CoachClientCard extends StatelessWidget {
     final String? goal = _cleanVisibleText(item.goal);
     final String? activityLevel = _cleanVisibleText(item.activityLevel);
     final String? notes = _cleanVisibleText(item.notes);
-
-    final List<Widget> metaRows = <Widget>[];
-
-    final Widget? goalRow = _buildMetaRow(
-      icon: Icons.flag_rounded,
-      label: 'Цель',
-      value: goal,
-    );
-    if (goalRow != null) {
-      metaRows.add(goalRow);
-    }
-
-    final Widget? activityRow = _buildMetaRow(
-      icon: Icons.bolt_rounded,
-      label: 'Активность',
-      value: activityLevel,
-    );
-    if (activityRow != null) {
-      metaRows.add(activityRow);
-    }
-
-    final Widget? streakRow = _buildMetaRow(
-      icon: Icons.local_fire_department_rounded,
-      label: 'Серия',
-      value: _consistencyStreakLabelFor(item),
-    );
-    if (streakRow != null) {
-      metaRows.add(streakRow);
-    }
-
-    final Widget? lastActivityRow = _buildMetaRow(
-      icon: Icons.schedule_rounded,
-      label: 'Последняя активность',
-      value: _formatLastActivityLabel(item.lastActivityDate),
-    );
-    if (lastActivityRow != null) {
-      metaRows.add(lastActivityRow);
-    }
+    final _CoachChangeSummary changeSummary = _changeSummaryFor(item, statusLabel: statusLabel);
+    final List<_CompactFactItem> compactFacts = <_CompactFactItem>[
+      if (ageLabel != null)
+        _CompactFactItem(
+          icon: Icons.cake_outlined,
+          label: 'Возраст',
+          value: ageLabel,
+        ),
+      if (goal != null)
+        _CompactFactItem(
+          icon: Icons.flag_rounded,
+          label: 'Цель',
+          value: goal,
+        ),
+      if (activityLevel != null)
+        _CompactFactItem(
+          icon: Icons.bolt_rounded,
+          label: 'Ритм',
+          value: activityLevel,
+        ),
+      _CompactFactItem(
+        icon: Icons.schedule_rounded,
+        label: 'Активность',
+        value: _formatLastActivityLabel(item.lastActivityDate),
+      ),
+      if (item.lastSessionDate != null)
+        _CompactFactItem(
+          icon: Icons.event_note_rounded,
+          label: 'Сессия',
+          value: _formatLastActivityLabel(item.lastSessionDate),
+        ),
+    ];
 
     return Material(
       color: cardBackground,
@@ -586,34 +584,25 @@ class _CoachClientCard extends StatelessWidget {
               _buildHeader(
                 context,
                 displayName: displayName,
-                ageLabel: ageLabel,
                 avatarUrl: _cleanVisibleText(item.avatarUrl) ?? '',
                 statusLabel: statusLabel,
                 statusColors: statusColors,
+                subtitle: changeSummary.eyebrow,
               ),
-              if (metaRows.isNotEmpty) ...<Widget>[
-                const SizedBox(height: 8),
-                Container(
-                  padding: const EdgeInsets.all(12),
-                  decoration: BoxDecoration(
-                    color: colors.surface,
-                    borderRadius: BorderRadius.circular(18),
-                    border: Border.all(color: theme.dividerColor.withValues(alpha: 0.6)),
-                  ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: <Widget>[
-                      metaRows.first,
-                      for (final Widget row in metaRows.skip(1)) ...<Widget>[
-                        const SizedBox(height: 8),
-                        row,
-                      ],
-                    ],
-                  ),
+              const SizedBox(height: 10),
+              _ChangeSummaryStrip(summary: changeSummary),
+              if (compactFacts.isNotEmpty) ...<Widget>[
+                const SizedBox(height: 10),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: compactFacts
+                      .map((_CompactFactItem fact) => _CompactFactChip(item: fact))
+                      .toList(),
                 ),
               ],
-              const SizedBox(height: 14),
-              const _BehaviorSummaryBlock(),
+              const SizedBox(height: 12),
+              _BehaviorSummaryBlock(item: item),
               if (notes != null) ...<Widget>[
                 const SizedBox(height: 12),
                 _CoachNoteBlock(notes: notes),
@@ -624,27 +613,28 @@ class _CoachClientCard extends StatelessWidget {
                 runSpacing: 8,
                 children: <Widget>[
                   SizedBox(
-                    width: 100,
-                    child: _CardActionButton(
-                      icon: Icons.open_in_new_rounded,
-                      label: 'Открыть',
-                      onPressed: onOpenClient,
-                    ),
-                  ),
-                  SizedBox(
-                    width: 100,
+                    width: 132,
                     child: _CardActionButton(
                       icon: Icons.chat_bubble_outline_rounded,
-                      label: 'Чат',
+                      label: 'Написать',
                       onPressed: onOpenChat,
+                      isPrimary: true,
                     ),
                   ),
                   SizedBox(
-                    width: 100,
+                    width: 132,
                     child: _CardActionButton(
                       icon: Icons.check_circle_outline_rounded,
-                      label: 'Отметка',
+                      label: 'Чек-ин',
                       onPressed: onCheckIn,
+                    ),
+                  ),
+                  SizedBox(
+                    width: 132,
+                    child: _CardActionButton(
+                      icon: Icons.open_in_new_rounded,
+                      label: 'Профиль',
+                      onPressed: onOpenClient,
                     ),
                   ),
                 ],
@@ -659,10 +649,10 @@ class _CoachClientCard extends StatelessWidget {
   Widget _buildHeader(
     BuildContext context, {
     required String displayName,
-    required String? ageLabel,
     required String avatarUrl,
     required String statusLabel,
     required _StatusColors statusColors,
+    required String subtitle,
   }) {
     final ThemeData theme = Theme.of(context);
     final ColorScheme colors = theme.colorScheme;
@@ -693,12 +683,13 @@ class _CoachClientCard extends StatelessWidget {
                     fontWeight: FontWeight.w800,
                   ),
                 ),
-                if (ageLabel != null) ...<Widget>[
+                if (subtitle.trim().isNotEmpty) ...<Widget>[
                   const SizedBox(height: 4),
                   Text(
-                    ageLabel,
+                    subtitle,
                     style: textTheme.bodySmall?.copyWith(
                       color: colors.onSurfaceVariant,
+                      fontWeight: FontWeight.w600,
                     ),
                   ),
                 ],
@@ -930,25 +921,98 @@ bool _hasRecentActivity(DateTime? value) {
   return now.difference(value).inDays < 7;
 }
 
-Widget? _buildMetaRow({
-  required IconData icon,
-  required String label,
-  required String? value,
+_CoachChangeSummary _changeSummaryFor(
+  CoachClientCardData item, {
+  required String statusLabel,
 }) {
-  final String trimmedValue = value?.trim() ?? '';
-  if (trimmedValue.isEmpty) {
-    return null;
+  final DateTime? latestSignal = _latestBehavioralSignal(item);
+  final DateTime? lastActivityDate = item.lastActivityDate;
+  final DateTime? lastSessionDate = item.lastSessionDate;
+  final bool hasAnySignal = latestSignal != null;
+  final bool onboardingPending = !item.onboardingCompleted && !hasAnySignal;
+
+  if (onboardingPending) {
+    return const _CoachChangeSummary(
+      eyebrow: 'Новый клиент без первых шагов',
+      title: 'Пока изменений не видно',
+      detail: 'Есть только базовый профиль: живых поведенческих сигналов еще нет.',
+      icon: Icons.person_add_alt_1_rounded,
+    );
   }
 
-  return _CoachInfoRow(
-    icon: icon,
-    label: label,
-    value: trimmedValue,
+  if (latestSignal == null) {
+    return _CoachChangeSummary(
+      eyebrow: 'Недостаточно поведенческих данных',
+      title: 'Новых сигналов пока нет',
+      detail: 'Можно опираться только на текущий статус "$statusLabel" и заполненные поля профиля.',
+      icon: Icons.info_outline_rounded,
+    );
+  }
+
+  final int daysSinceSignal = DateTime.now().difference(latestSignal).inDays;
+  if (lastActivityDate != null && _isSameCalendarDay(lastActivityDate, latestSignal)) {
+    if (daysSinceSignal <= 0) {
+      return const _CoachChangeSummary(
+        eyebrow: 'Свежий сигнал поведения',
+        title: 'Активность была сегодня',
+        detail: 'Клиент недавно проявлялся в системе. Логичный следующий шаг - быстро проверить контекст в чате.',
+        icon: Icons.waving_hand_rounded,
+      );
+    }
+
+    if (daysSinceSignal == 1) {
+      return const _CoachChangeSummary(
+        eyebrow: 'Свежий сигнал поведения',
+        title: 'Активность была вчера',
+        detail: 'Контакт еще теплый. Можно ответить или дать короткий follow-up, пока окно внимания не закрылось.',
+        icon: Icons.update_rounded,
+      );
+    }
+  }
+
+  if (lastSessionDate != null && _isSameCalendarDay(lastSessionDate, latestSignal) && daysSinceSignal <= 3) {
+    return _CoachChangeSummary(
+      eyebrow: 'Недавняя коуч-сессия',
+      title: 'После сессии прошло ${_daysAgoLabel(daysSinceSignal)}',
+      detail: 'Сейчас уместно закрепить договоренности и проверить, появился ли первый отклик после сессии.',
+      icon: Icons.event_available_rounded,
+    );
+  }
+
+  if (daysSinceSignal >= 14) {
+    return _CoachChangeSummary(
+      eyebrow: 'Тишина дольше обычного',
+      title: 'Последний сигнал был ${_daysAgoLabel(daysSinceSignal)} назад',
+      detail: 'Это уже скорее задача на мягкое возвращение в контакт, чем на обычную навигацию по профилю.',
+      icon: Icons.notifications_paused_rounded,
+    );
+  }
+
+  return _CoachChangeSummary(
+    eyebrow: 'Изменения умеренные',
+    title: 'Последний сигнал был ${_daysAgoLabel(daysSinceSignal)} назад',
+    detail: 'Карточка показывает общее состояние, но без данных о новых сообщениях или исходах интервенций.',
+    icon: Icons.insights_rounded,
   );
 }
 
-String? _consistencyStreakLabelFor(CoachClientCardData item) {
-  return null;
+DateTime? _latestBehavioralSignal(CoachClientCardData item) {
+  final DateTime? lastActivity = item.lastActivityDate;
+  final DateTime? lastSession = item.lastSessionDate;
+
+  if (lastActivity == null) {
+    return lastSession;
+  }
+
+  if (lastSession == null) {
+    return lastActivity;
+  }
+
+  return lastActivity.isAfter(lastSession) ? lastActivity : lastSession;
+}
+
+bool _isSameCalendarDay(DateTime first, DateTime second) {
+  return first.year == second.year && first.month == second.month && first.day == second.day;
 }
 
 String _formatLastActivityLabel(DateTime? value) {
@@ -994,8 +1058,8 @@ String _statusLabelFor(String status) {
   return behaviorStatusLabel(status);
 }
 
-class _CoachInfoRow extends StatelessWidget {
-  const _CoachInfoRow({
+class _CompactFactItem {
+  const _CompactFactItem({
     required this.icon,
     required this.label,
     required this.value,
@@ -1004,56 +1068,179 @@ class _CoachInfoRow extends StatelessWidget {
   final IconData icon;
   final String label;
   final String value;
+}
+
+class _CompactFactChip extends StatelessWidget {
+  const _CompactFactChip({required this.item});
+
+  final _CompactFactItem item;
 
   @override
   Widget build(BuildContext context) {
     final ThemeData theme = Theme.of(context);
     final ColorScheme colors = theme.colorScheme;
 
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: <Widget>[
-        Icon(
-          icon,
-          size: 16,
-          color: colors.primary.withValues(alpha: 0.78),
-        ),
-        const SizedBox(width: 8),
-        Expanded(
-          child: Text.rich(
-            TextSpan(
-              children: <InlineSpan>[
-                TextSpan(
-                  text: '$label: ',
-                  style: theme.textTheme.bodySmall?.copyWith(
+    return Container(
+      constraints: const BoxConstraints(minHeight: 36),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      decoration: BoxDecoration(
+        color: colors.surface.withValues(alpha: 0.88),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: theme.dividerColor.withValues(alpha: 0.55)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: <Widget>[
+          Icon(
+            item.icon,
+            size: 15,
+            color: colors.primary.withValues(alpha: 0.78),
+          ),
+          const SizedBox(width: 7),
+          Flexible(
+            child: Text.rich(
+              TextSpan(
+                children: <InlineSpan>[
+                  TextSpan(
+                    text: '${item.label}: ',
+                    style: theme.textTheme.labelSmall?.copyWith(
+                      color: colors.onSurfaceVariant,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  TextSpan(
+                    text: item.value,
+                    style: theme.textTheme.labelSmall?.copyWith(
+                      color: colors.onSurface,
+                    ),
+                  ),
+                ],
+              ),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _CoachChangeSummary {
+  const _CoachChangeSummary({
+    required this.eyebrow,
+    required this.title,
+    required this.detail,
+    required this.icon,
+  });
+
+  final String eyebrow;
+  final String title;
+  final String detail;
+  final IconData icon;
+}
+
+class _ChangeSummaryStrip extends StatelessWidget {
+  const _ChangeSummaryStrip({required this.summary});
+
+  final _CoachChangeSummary summary;
+
+  @override
+  Widget build(BuildContext context) {
+    final ThemeData theme = Theme.of(context);
+    final ColorScheme colors = theme.colorScheme;
+
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: colors.surface,
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: theme.dividerColor.withValues(alpha: 0.6)),
+      ),
+      child: Row(
+        children: <Widget>[
+          Icon(
+            summary.icon,
+            size: 18,
+            color: colors.primary.withValues(alpha: 0.82),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: <Widget>[
+                Text(
+                  'Что изменилось',
+                  style: theme.textTheme.labelMedium?.copyWith(
                     color: colors.onSurfaceVariant,
                     fontWeight: FontWeight.w700,
                   ),
                 ),
-                TextSpan(
-                  text: value,
+                const SizedBox(height: 3),
+                Text(
+                  summary.title,
+                  style: theme.textTheme.bodyMedium?.copyWith(
+                    color: colors.onSurface,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+                const SizedBox(height: 3),
+                Text(
+                  summary.detail,
                   style: theme.textTheme.bodySmall?.copyWith(
                     color: colors.onSurfaceVariant,
+                    height: 1.35,
                   ),
                 ),
               ],
             ),
-            maxLines: 2,
-            overflow: TextOverflow.ellipsis,
           ),
-        ),
-      ],
+        ],
+      ),
     );
   }
 }
 
 class _BehaviorSummaryBlock extends StatelessWidget {
-  const _BehaviorSummaryBlock();
+  const _BehaviorSummaryBlock({required this.item});
+
+  final CoachClientCardData item;
 
   @override
   Widget build(BuildContext context) {
     final ThemeData theme = Theme.of(context);
     final ColorScheme colors = theme.colorScheme;
+    final String status = _statusValue(item);
+    final String statusLabel = _statusLabelFor(status);
+    final String? goal = _cleanVisibleText(item.goal);
+    final String? activityLevel = _cleanVisibleText(item.activityLevel);
+
+    String title;
+    String detail;
+
+    switch (status) {
+      case 'onboarding':
+        title = 'Профиль еще в разогреве';
+        detail = 'Онбординг не завершен или поведенческих данных пока мало. Сейчас полезнее запустить первый понятный ритм контакта.';
+        break;
+      case 'inactive':
+        title = 'Есть риск выпадения из процесса';
+        detail = 'По текущим данным клиент давно не проявлялся. Это сигнал на мягкое возвращение в контакт, а не на глубокий разбор прогресса.';
+        break;
+      case 'struggling':
+        title = 'Нужна повышенная поддержка';
+        detail = 'Статус уже помечен как "$statusLabel". Без дополнительных событий мы не видим причину, но карточка указывает на необходимость более внимательного follow-up.';
+        break;
+      case 'inconsistent':
+        title = 'Ритм выглядит нестабильным';
+        detail = 'Есть признаки неровного движения. Сейчас лучше всего помогает короткая конкретизация следующего шага для клиента.';
+        break;
+      default:
+        title = 'Контакт выглядит сохраненным';
+        detail = 'По доступным полям клиент сейчас ближе к рабочему ритму, чем к выпадению. Но данных о непрочитанных сообщениях и исходах интервенций здесь пока нет.';
+        break;
+    }
 
     return Container(
       padding: const EdgeInsets.all(12),
@@ -1084,11 +1271,39 @@ class _BehaviorSummaryBlock extends StatelessWidget {
                 ),
                 const SizedBox(height: 2),
                 Text(
-                  'Пока недостаточно данных',
-                  style: theme.textTheme.bodySmall?.copyWith(
-                    color: colors.onSurfaceVariant,
+                  title,
+                  style: theme.textTheme.bodyMedium?.copyWith(
+                    color: colors.onSurface,
+                    fontWeight: FontWeight.w700,
                   ),
                 ),
+                const SizedBox(height: 4),
+                Text(
+                  detail,
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: colors.onSurfaceVariant,
+                    height: 1.35,
+                  ),
+                ),
+                if (goal != null || activityLevel != null) ...<Widget>[
+                  const SizedBox(height: 8),
+                  Wrap(
+                    spacing: 6,
+                    runSpacing: 6,
+                    children: <Widget>[
+                      if (goal != null)
+                        _BehaviorHintChip(
+                          icon: Icons.flag_rounded,
+                          text: 'Фокус: $goal',
+                        ),
+                      if (activityLevel != null)
+                        _BehaviorHintChip(
+                          icon: Icons.bolt_rounded,
+                          text: 'Самооценка ритма: $activityLevel',
+                        ),
+                    ],
+                  ),
+                ],
               ],
             ),
           ),
@@ -1111,9 +1326,9 @@ class _CoachNoteBlock extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: colors.secondaryContainer,
+        color: colors.surface.withValues(alpha: 0.76),
         borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: theme.dividerColor.withValues(alpha: 0.6)),
+        border: Border.all(color: theme.dividerColor.withValues(alpha: 0.45)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -1122,14 +1337,14 @@ class _CoachNoteBlock extends StatelessWidget {
             children: <Widget>[
               Icon(
                 Icons.sticky_note_2_outlined,
-                size: 18,
-                color: colors.primary.withValues(alpha: 0.85),
+                size: 17,
+                color: colors.onSurfaceVariant,
               ),
               const SizedBox(width: 8),
               Text(
                 'Заметка коуча',
                 style: theme.textTheme.labelMedium?.copyWith(
-                  color: colors.onSurface,
+                  color: colors.onSurfaceVariant,
                   fontWeight: FontWeight.w700,
                 ),
               ),
@@ -1156,11 +1371,13 @@ class _CardActionButton extends StatelessWidget {
     required this.icon,
     required this.label,
     required this.onPressed,
+    this.isPrimary = false,
   });
 
   final IconData icon;
   final String label;
   final VoidCallback onPressed;
+  final bool isPrimary;
 
   @override
   Widget build(BuildContext context) {
@@ -1173,9 +1390,15 @@ class _CardActionButton extends StatelessWidget {
         onPressed: onPressed,
         style: OutlinedButton.styleFrom(
           padding: const EdgeInsets.symmetric(horizontal: 10),
-          foregroundColor: colors.onSurface,
-          backgroundColor: colors.surfaceContainerHighest.withValues(alpha: 0.2),
-          side: BorderSide(color: theme.dividerColor.withValues(alpha: 0.7)),
+          foregroundColor: isPrimary ? colors.onPrimaryContainer : colors.onSurface,
+          backgroundColor: isPrimary
+              ? colors.primaryContainer.withValues(alpha: 0.75)
+              : colors.surfaceContainerHighest.withValues(alpha: 0.2),
+          side: BorderSide(
+            color: isPrimary
+                ? colors.primary.withValues(alpha: 0.15)
+                : theme.dividerColor.withValues(alpha: 0.7),
+          ),
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
           textStyle: theme.textTheme.labelMedium?.copyWith(
             fontWeight: FontWeight.w700,
@@ -1195,6 +1418,45 @@ class _CardActionButton extends StatelessWidget {
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+class _BehaviorHintChip extends StatelessWidget {
+  const _BehaviorHintChip({required this.icon, required this.text});
+
+  final IconData icon;
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    final ThemeData theme = Theme.of(context);
+    final ColorScheme colors = theme.colorScheme;
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+      decoration: BoxDecoration(
+        color: colors.surfaceContainerHighest.withValues(alpha: 0.35),
+        borderRadius: BorderRadius.circular(999),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: <Widget>[
+          Icon(icon, size: 14, color: colors.onSurfaceVariant),
+          const SizedBox(width: 5),
+          Flexible(
+            child: Text(
+              text,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: theme.textTheme.labelSmall?.copyWith(
+                color: colors.onSurfaceVariant,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }

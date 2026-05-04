@@ -887,8 +887,9 @@ class _CoachClientDetailsPageState extends State<CoachClientDetailsPage>
   final TextEditingController _notesController = TextEditingController();
   final ScrollController _scrollController = ScrollController();
 
-  bool _isSummaryExpanded = true;
-  bool _isProgressExpanded = true;
+  bool _isSummaryExpanded = false;
+  bool _isProgressExpanded = false;
+  bool _isShiftExpanded = false;
   bool _isWeeklyStepsExpanded = false;
   bool _isCheckInsExpanded = false;
   bool _isTimelineExpanded = false;
@@ -993,6 +994,9 @@ class _CoachClientDetailsPageState extends State<CoachClientDetailsPage>
           break;
         case _ClientDetailsSection.progress:
           _isProgressExpanded = !_isProgressExpanded;
+          break;
+        case _ClientDetailsSection.shift:
+          _isShiftExpanded = !_isShiftExpanded;
           break;
         case _ClientDetailsSection.weeklySteps:
           _isWeeklyStepsExpanded = !_isWeeklyStepsExpanded;
@@ -1360,28 +1364,28 @@ class _CoachClientDetailsPageState extends State<CoachClientDetailsPage>
     final ThemeData theme = Theme.of(context);
     final ColorScheme colors = theme.colorScheme;
     final TextTheme textTheme = theme.textTheme;
+    final BehaviorStatusPalette statusPalette = behaviorStatusPaletteFor(data.progressStatusRaw);
 
     return _SectionCard(
       title: 'Клиент',
-      subtitle: 'Краткий поведенческий портрет',
-      child: Row(
+      child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: <Widget>[
-          IdentityAvatar(
-            displayName: data.displayName,
-            avatarUrl: data.avatarUrl,
-            size: 72,
-            backgroundColor: colors.primary.withValues(alpha: 0.1),
-            borderColor: colors.primary.withValues(alpha: 0.18),
-            borderWidth: 2,
-            textColor: colors.primary,
-          ),
-          const SizedBox(width: 16),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: <Widget>[
-                Text(
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: <Widget>[
+              IdentityAvatar(
+                displayName: data.displayName,
+                avatarUrl: data.avatarUrl,
+                size: 72,
+                backgroundColor: colors.primary.withValues(alpha: 0.1),
+                borderColor: colors.primary.withValues(alpha: 0.18),
+                borderWidth: 2,
+                textColor: colors.primary,
+              ),
+              const SizedBox(width: 16),
+              Expanded(
+                child: Text(
                   data.displayName,
                   maxLines: 2,
                   overflow: TextOverflow.ellipsis,
@@ -1390,48 +1394,59 @@ class _CoachClientDetailsPageState extends State<CoachClientDetailsPage>
                     fontWeight: FontWeight.w800,
                   ),
                 ),
-                const SizedBox(height: 4),
-                Text(
-                  data.ageValue,
-                  style: textTheme.bodySmall?.copyWith(color: colors.onSurfaceVariant),
+              ),
+              const SizedBox(width: 12),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                decoration: BoxDecoration(
+                  color: statusPalette.background,
+                  borderRadius: BorderRadius.circular(999),
+                  border: Border.all(color: statusPalette.border),
                 ),
-                const SizedBox(height: 8),
-                Text(
-                  'Цель: ${data.goalValue}',
-                  style: textTheme.bodyMedium?.copyWith(color: colors.onSurface),
+                child: Text(
+                  data.progressStatusLabel,
+                  style: textTheme.labelSmall?.copyWith(
+                    color: statusPalette.foreground,
+                    fontWeight: FontWeight.w700,
+                  ),
                 ),
-                const SizedBox(height: 2),
-                Text(
-                  'Активность: ${data.activityLevelValue}',
-                  style: textTheme.bodySmall?.copyWith(color: colors.onSurfaceVariant),
-                ),
-                const SizedBox(height: 12),
-                Wrap(
-                  spacing: 8,
-                  runSpacing: 8,
-                  children: <Widget>[
-                    _MiniChip(
-                      icon: Icons.verified_rounded,
-                      label: data.progressStatusLabel,
-                      backgroundColor: behaviorStatusPaletteFor(data.progressStatusRaw).background,
-                      textColor: behaviorStatusPaletteFor(data.progressStatusRaw).foreground,
-                    ),
-                    _MiniChip(
-                      icon: Icons.auto_awesome_rounded,
-                      label: 'Балл ${data.progressScore}',
-                      backgroundColor: colors.secondary.withValues(alpha: 0.12),
-                      textColor: colors.secondary,
-                    ),
-                    _MiniChip(
-                      icon: Icons.local_fire_department_rounded,
-                      label: '${data.consistencyStreak}-дневная серия',
-                      backgroundColor: const Color(0xFFFFF1D9),
-                      textColor: const Color(0xFFB45309),
-                    ),
-                  ],
-                ),
-              ],
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Text(
+            _headerOperationalSubtitle(data),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: textTheme.bodyMedium?.copyWith(
+              color: colors.onSurfaceVariant,
+              fontWeight: FontWeight.w600,
             ),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            '${data.ageValue} • ${data.goalValue} • Ритм: ${data.activityLevelValue}',
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: textTheme.bodySmall?.copyWith(
+              color: colors.onSurfaceVariant,
+              height: 1.3,
+            ),
+          ),
+          const SizedBox(height: 14),
+          _MiniLiveStrip(data: data),
+          const SizedBox(height: 10),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: <Widget>[
+              _MiniChip(
+                icon: Icons.auto_awesome_rounded,
+                label: 'Балл ${data.progressScore}',
+                backgroundColor: colors.secondary.withValues(alpha: 0.12),
+                textColor: colors.secondary,
+              ),
+            ],
           ),
         ],
       ),
@@ -1441,10 +1456,11 @@ class _CoachClientDetailsPageState extends State<CoachClientDetailsPage>
   Widget _buildSummarySection(BuildContext context, _ClientDetailsViewData data) {
     final ThemeData theme = Theme.of(context);
     final ColorScheme colors = theme.colorScheme;
+    final _BehaviorShiftSummary shiftSummary = _behaviorShiftSummaryFor(data);
 
     return _SectionCard(
       title: 'Поведенческая сводка',
-      subtitle: 'Мягкий обзор ритма, вовлечённости и регулярности',
+      subtitle: 'Что текущее состояние значит для коуча прямо сейчас',
       isExpanded: _isSummaryExpanded,
       onToggle: () => _toggleSection(_ClientDetailsSection.summary),
       child: Column(
@@ -1464,6 +1480,12 @@ class _CoachClientDetailsPageState extends State<CoachClientDetailsPage>
               color: colors.onSurfaceVariant,
               height: 1.35,
             ),
+          ),
+          const SizedBox(height: 10),
+          _buildSectionBridge(
+            context,
+            icon: Icons.alt_route_rounded,
+            text: shiftSummary.description,
           ),
           const SizedBox(height: 14),
           Wrap(
@@ -1510,7 +1532,7 @@ class _CoachClientDetailsPageState extends State<CoachClientDetailsPage>
 
     return _SectionCard(
       title: 'Прогресс',
-      subtitle: 'Короткие сигналы для оценки общего ритма',
+      subtitle: 'Где держится ритм, а где внимание уже нужно предметно',
       isExpanded: _isProgressExpanded,
       onToggle: () => _toggleSection(_ClientDetailsSection.progress),
       child: Wrap(
@@ -1563,7 +1585,9 @@ class _CoachClientDetailsPageState extends State<CoachClientDetailsPage>
 
     return _SectionCard(
       title: 'Шаги недели',
-      subtitle: hasTaskActivity ? data.weekValue : _behaviorStarterHeadline,
+      subtitle: hasTaskActivity
+          ? 'Показывает, дошел ли клиент до действия после контакта и намерения'
+          : _behaviorStarterHeadline,
       isExpanded: _isWeeklyStepsExpanded,
       onToggle: () => _toggleSection(_ClientDetailsSection.weeklySteps),
       child: Column(
@@ -1639,7 +1663,7 @@ class _CoachClientDetailsPageState extends State<CoachClientDetailsPage>
 
     return _SectionCard(
       title: 'Свежие чек-ины',
-      subtitle: 'Последние эмоциональные отметки без медицинских интерпретаций',
+      subtitle: 'Эмоциональный фон помогает понять, почему ритм держится или начинает проседать',
       isExpanded: _isCheckInsExpanded,
       onToggle: () => _toggleSection(_ClientDetailsSection.checkIns),
       child: checkIns.isEmpty
@@ -1665,7 +1689,7 @@ class _CoachClientDetailsPageState extends State<CoachClientDetailsPage>
 
     return _SectionCard(
       title: 'Лента активности',
-      subtitle: 'Последние события: задачи, чек-ины, чат и паузы',
+      subtitle: 'Здесь видно, был ли отклик после задач, check-in или паузы',
       isExpanded: _isTimelineExpanded,
       onToggle: () => _toggleSection(_ClientDetailsSection.timeline),
       child: entries.isEmpty
@@ -1757,8 +1781,8 @@ class _CoachClientDetailsPageState extends State<CoachClientDetailsPage>
     final ColorScheme colors = theme.colorScheme;
 
     return _SectionCard(
-      title: 'Быстрые действия',
-      subtitle: 'Без лишней перегрузки',
+      title: 'Следующие шаги коуча',
+      subtitle: 'Operational actions вместо простой навигации',
       child: Wrap(
         spacing: 12,
         runSpacing: 12,
@@ -1771,21 +1795,155 @@ class _CoachClientDetailsPageState extends State<CoachClientDetailsPage>
           ),
           _QuickActionButton(
             icon: Icons.fact_check_rounded,
-            label: 'Отправить check-in',
+            label: 'Мягкий check-in',
             onPressed: _sendCheckInStub,
             accentColor: colors.secondary,
           ),
           _QuickActionButton(
             icon: Icons.playlist_add_check_rounded,
-            label: 'Назначить задачи',
+            label: 'Предложить micro-step',
             onPressed: _openPlanEditor,
             accentColor: colors.primary,
           ),
           _QuickActionButton(
-            icon: Icons.favorite_border_rounded,
-            label: 'Поддержать клиента',
+            icon: Icons.timeline_rounded,
+            label: 'Открыть timeline',
             onPressed: _encourageClientStub,
             accentColor: const Color(0xFFB45309),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildChangeSinceVisitSection(BuildContext context, _ClientDetailsViewData data) {
+    final ThemeData theme = Theme.of(context);
+    final ColorScheme colors = theme.colorScheme;
+    final _ChangeNarrative summary = _changeNarrativeFor(data);
+
+    return _SectionCard(
+      title: 'Что изменилось с прошлого визита',
+      subtitle: 'Change-awareness по доступным событиям без выдуманного last-view state',
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(
+              color: colors.surfaceContainerHighest.withValues(alpha: 0.16),
+              borderRadius: BorderRadius.circular(18),
+              border: Border.all(color: theme.dividerColor.withValues(alpha: 0.7)),
+            ),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: <Widget>[
+                Icon(summary.icon, color: colors.primary.withValues(alpha: 0.8), size: 18),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: <Widget>[
+                      Text(
+                        summary.title,
+                        style: theme.textTheme.bodyMedium?.copyWith(
+                          color: colors.onSurface,
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        summary.detail,
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          color: colors.onSurfaceVariant,
+                          height: 1.35,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 10),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: summary.items.map((_MiniSignalItem item) => _SignalChip(item: item)).toList(),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildShiftNarrativeSection(BuildContext context, _ClientDetailsViewData data) {
+    final ThemeData theme = Theme.of(context);
+    final ColorScheme colors = theme.colorScheme;
+    final _BehaviorShiftSummary summary = _behaviorShiftSummaryFor(data);
+
+    return _SectionCard(
+      title: 'Поведенческий сдвиг за 7 дней',
+      subtitle: 'Связывает ритм, шаги, чек-ины и контакт в одну рабочую историю',
+      isExpanded: _isShiftExpanded,
+      onToggle: () => _toggleSection(_ClientDetailsSection.shift),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          Text(
+            summary.title,
+            style: theme.textTheme.titleSmall?.copyWith(
+              color: colors.onSurface,
+              fontWeight: FontWeight.w800,
+            ),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            summary.description,
+            style: theme.textTheme.bodyMedium?.copyWith(
+              color: colors.onSurfaceVariant,
+              height: 1.35,
+            ),
+          ),
+          const SizedBox(height: 10),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: summary.links
+                .map((_NarrativeLinkItem item) => _NarrativeLinkChip(item: item))
+                .toList(),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSectionBridge(
+    BuildContext context, {
+    required IconData icon,
+    required String text,
+  }) {
+    final ThemeData theme = Theme.of(context);
+    final ColorScheme colors = theme.colorScheme;
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      decoration: BoxDecoration(
+        color: colors.surfaceContainerHighest.withValues(alpha: 0.14),
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: Row(
+        children: <Widget>[
+          Icon(icon, size: 16, color: colors.onSurfaceVariant),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              text,
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: colors.onSurfaceVariant,
+                fontWeight: FontWeight.w600,
+                height: 1.3,
+              ),
+            ),
           ),
         ],
       ),
@@ -1841,14 +1999,36 @@ class _CoachClientDetailsPageState extends State<CoachClientDetailsPage>
                     const SizedBox(height: 16),
                     _buildHeaderCard(context, _data ?? _fallbackViewData()),
                     const SizedBox(height: 16),
+                    _buildChangeSinceVisitSection(context, _data ?? _fallbackViewData()),
+                    const SizedBox(height: 16),
                     _buildSummarySection(context, _data ?? _fallbackViewData()),
+                    const SizedBox(height: 16),
+                    _buildShiftNarrativeSection(context, _data ?? _fallbackViewData()),
                     const SizedBox(height: 16),
                     _buildProgressMetricsSection(context, _data ?? _fallbackViewData()),
                     const SizedBox(height: 16),
+                    _buildSectionBridge(
+                      context,
+                      icon: Icons.arrow_downward_rounded,
+                      text: 'Если прогресс проседает, следующий вопрос — дошел ли клиент до конкретных шагов на этой неделе.',
+                    ),
+                    const SizedBox(height: 12),
                     _buildTaskCompletionSection(context, _data ?? _fallbackViewData()),
                     const SizedBox(height: 16),
+                    _buildSectionBridge(
+                      context,
+                      icon: Icons.arrow_downward_rounded,
+                      text: 'Если шаги не двигаются, эмоциональный фон и регулярность check-in помогают понять, это перегрузка, сопротивление или просто тишина.',
+                    ),
+                    const SizedBox(height: 12),
                     _buildRecentCheckInsSection(context, _data ?? _fallbackViewData()),
                     const SizedBox(height: 16),
+                    _buildSectionBridge(
+                      context,
+                      icon: Icons.arrow_downward_rounded,
+                      text: 'После этого полезно открыть ленту: был ли вообще отклик, сообщение или заметная пауза после предыдущих касаний.',
+                    ),
+                    const SizedBox(height: 12),
                     _buildTimelineSection(context, _data ?? _fallbackViewData()),
                     const SizedBox(height: 16),
                     _buildNotesSection(context, _data ?? _fallbackViewData()),
@@ -1910,6 +2090,144 @@ int? _ageFrom(DateTime? birthDate) {
   }
 
   return years < 0 ? null : years;
+}
+
+String _headerOperationalSubtitle(_ClientDetailsViewData data) {
+  if (!data.hasAnySignals) {
+    return 'Пока доступен только базовый профиль без живых поведенческих сигналов';
+  }
+
+  if (data.lastActivityValue == _behaviorEmptyLabel) {
+    return 'Контекст пока частичный: есть отдельные сигналы, но без устойчивого ритма';
+  }
+
+  return 'Последний подтвержденный сигнал: ${data.lastActivityValue.toLowerCase()}';
+}
+
+_ChangeNarrative _changeNarrativeFor(_ClientDetailsViewData data) {
+  final List<_MiniSignalItem> items = <_MiniSignalItem>[];
+
+  if (data.hasTaskActivity) {
+    items.add(
+      _MiniSignalItem(
+        icon: Icons.task_alt_rounded,
+        text: '${data.tasksCompletedThisWeek} завершено из ${data.tasksTotalThisWeek}',
+      ),
+    );
+  }
+
+  if (data.hasCheckInActivity) {
+    items.add(
+      _MiniSignalItem(
+        icon: Icons.favorite_border_rounded,
+        text: '${data.checkInDaysLast7} check-in за 7 дней',
+      ),
+    );
+  }
+
+  if (data.timelineEntries.isNotEmpty) {
+    final _TimelineEntryData latestEntry = data.timelineEntries.first;
+    items.add(
+      _MiniSignalItem(
+        icon: Icons.timeline_rounded,
+        text: '${latestEntry.title}: ${_relativeDayLabel(latestEntry.dateTime)}',
+      ),
+    );
+  }
+
+  if (!data.hasAnySignals) {
+    return const _ChangeNarrative(
+      title: 'Подтвержденных новых событий пока нет',
+      detail: 'История изменений еще не собрана: доступны только базовые поля клиента без событий чата, шагов и check-in.',
+      icon: Icons.info_outline_rounded,
+      items: <_MiniSignalItem>[
+        _MiniSignalItem(icon: Icons.person_outline_rounded, text: 'Доступен только профиль клиента'),
+      ],
+    );
+  }
+
+  if (data.timelineEntries.isEmpty) {
+    return _ChangeNarrative(
+      title: 'История изменений пока ограничена',
+      detail: 'Есть отдельные статусные поля, но лента событий еще не дает уверенно сказать, что поменялось после прошлого визита коуча.',
+      icon: Icons.history_toggle_off_rounded,
+      items: items,
+    );
+  }
+
+  return _ChangeNarrative(
+    title: 'Видны новые поведенческие сигналы, но не точный delta-since-last-view',
+    detail: 'Сейчас экран показывает последние подтвержденные события. Реальное “с прошлого визита коуча” потребует отдельного last-view state, которого пока нет в текущем data contract.',
+    icon: Icons.update_rounded,
+    items: items,
+  );
+}
+
+_BehaviorShiftSummary _behaviorShiftSummaryFor(_ClientDetailsViewData data) {
+  final List<_NarrativeLinkItem> links = <_NarrativeLinkItem>[];
+
+  if (data.hasCheckInActivity) {
+    links.add(
+      _NarrativeLinkItem(
+        icon: Icons.favorite_border_rounded,
+        text: 'Check-in ритм: ${data.checkInDaysLast7}/7 дней',
+      ),
+    );
+  }
+
+  if (data.hasTaskActivity) {
+    links.add(
+      _NarrativeLinkItem(
+        icon: Icons.task_alt_rounded,
+        text: 'Шаги недели: ${_formatPercent(data.completionRate)} выполнения',
+      ),
+    );
+  }
+
+  if (data.timelineEntries.isNotEmpty) {
+    links.add(
+      const _NarrativeLinkItem(
+        icon: Icons.timeline_rounded,
+        text: 'Лента уже показывает живые события и паузы',
+      ),
+    );
+  }
+
+  if (!data.hasAnySignals) {
+    return const _BehaviorShiftSummary(
+      title: 'Поведенческий сдвиг пока не читается',
+      description: 'Недостаточно событий, чтобы связать состояние, действия и отклик в рабочую историю. Пока это скорее стартовый профиль, чем narrative клиента.',
+      links: <_NarrativeLinkItem>[
+        _NarrativeLinkItem(icon: Icons.info_outline_rounded, text: 'Нужны первые шаги, check-in или сообщения'),
+      ],
+    );
+  }
+
+  if (data.missedDays >= 4 && data.tasksCompletedThisWeek == 0) {
+    return _BehaviorShiftSummary(
+      title: 'Ритм ослаб и до действия клиент почти не доходит',
+      description: 'За последние 7 дней мало регулярных check-in, а в шагах недели пока нет уверенного движения. Это больше похоже на затухание ритма, чем на устойчивый прогресс.',
+      links: links,
+    );
+  }
+
+  if (data.tasksCompletedThisWeek > 0 && data.checkInDaysLast7 >= 2) {
+    return _BehaviorShiftSummary(
+      title: 'Есть связка между вниманием к себе и переходом к действию',
+      description: 'Клиент не только появляется в данных, но и доходит до конкретных шагов. Это хороший момент для поддерживающего follow-up, а не для давления.',
+      links: links,
+    );
+  }
+
+  return _BehaviorShiftSummary(
+    title: 'Сигналы смешанные: контакт есть, но причинность пока частичная',
+    description: 'Экран уже показывает отдельные поведенческие следы, но без read-state, intervention outcome и last-view delta narrative остается приближенным, а не полным.',
+    links: links.isEmpty
+        ? const <_NarrativeLinkItem>[
+            _NarrativeLinkItem(icon: Icons.insights_rounded, text: 'Есть базовые сигналы, но причинность еще слабая'),
+          ]
+        : links,
+  );
 }
 
 class _SectionCard extends StatelessWidget {
@@ -2009,9 +2327,50 @@ class _SectionCard extends StatelessWidget {
   }
 }
 
+class _MiniSignalItem {
+  const _MiniSignalItem({required this.icon, required this.text});
+
+  final IconData icon;
+  final String text;
+}
+
+class _NarrativeLinkItem {
+  const _NarrativeLinkItem({required this.icon, required this.text});
+
+  final IconData icon;
+  final String text;
+}
+
+class _ChangeNarrative {
+  const _ChangeNarrative({
+    required this.title,
+    required this.detail,
+    required this.icon,
+    required this.items,
+  });
+
+  final String title;
+  final String detail;
+  final IconData icon;
+  final List<_MiniSignalItem> items;
+}
+
+class _BehaviorShiftSummary {
+  const _BehaviorShiftSummary({
+    required this.title,
+    required this.description,
+    required this.links,
+  });
+
+  final String title;
+  final String description;
+  final List<_NarrativeLinkItem> links;
+}
+
 enum _ClientDetailsSection {
   summary,
   progress,
+  shift,
   weeklySteps,
   checkIns,
   timeline,
@@ -2122,6 +2481,120 @@ class _MiniChip extends StatelessWidget {
             style: theme.textTheme.labelSmall?.copyWith(
               color: textColor,
               fontWeight: FontWeight.w700,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _MiniLiveStrip extends StatelessWidget {
+  const _MiniLiveStrip({required this.data});
+
+  final _ClientDetailsViewData data;
+
+  @override
+  Widget build(BuildContext context) {
+    final List<_MiniSignalItem> items = <_MiniSignalItem>[
+      _MiniSignalItem(
+        icon: Icons.schedule_rounded,
+        text: data.lastActivityValue == _behaviorEmptyLabel ? 'Активность: нет сигнала' : 'Активность: ${data.lastActivityValue}',
+      ),
+      _MiniSignalItem(
+        icon: Icons.local_fire_department_rounded,
+        text: data.consistencyStreak > 0 ? 'Серия: ${data.consistencyStreak} дн.' : 'Серия пока не видна',
+      ),
+      _MiniSignalItem(
+        icon: Icons.favorite_border_rounded,
+        text: data.hasCheckInActivity ? 'Check-in: ${data.checkInDaysLast7}/7 дней' : 'Check-in: нет данных',
+      ),
+      _MiniSignalItem(
+        icon: Icons.visibility_outlined,
+        text: data.hasAnySignals ? 'Внимание: ${data.progressStatusLabel}' : 'Внимание: мало данных',
+      ),
+    ];
+
+    return Wrap(
+      spacing: 8,
+      runSpacing: 8,
+      children: items.map((_MiniSignalItem item) => _SignalChip(item: item)).toList(),
+    );
+  }
+}
+
+class _SignalChip extends StatelessWidget {
+  const _SignalChip({required this.item});
+
+  final _MiniSignalItem item;
+
+  @override
+  Widget build(BuildContext context) {
+    final ThemeData theme = Theme.of(context);
+    final ColorScheme colors = theme.colorScheme;
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      decoration: BoxDecoration(
+        color: colors.surface,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: theme.dividerColor.withValues(alpha: 0.65)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: <Widget>[
+          Icon(item.icon, size: 15, color: colors.primary.withValues(alpha: 0.8)),
+          const SizedBox(width: 6),
+          ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 220),
+            child: Text(
+              item.text,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: theme.textTheme.labelSmall?.copyWith(
+                color: colors.onSurface,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _NarrativeLinkChip extends StatelessWidget {
+  const _NarrativeLinkChip({required this.item});
+
+  final _NarrativeLinkItem item;
+
+  @override
+  Widget build(BuildContext context) {
+    final ThemeData theme = Theme.of(context);
+    final ColorScheme colors = theme.colorScheme;
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      decoration: BoxDecoration(
+        color: colors.surfaceContainerHighest.withValues(alpha: 0.16),
+        borderRadius: BorderRadius.circular(14),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: <Widget>[
+          Icon(item.icon, size: 15, color: colors.onSurfaceVariant),
+          const SizedBox(width: 6),
+          ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 240),
+            child: Text(
+              item.text,
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: theme.textTheme.labelSmall?.copyWith(
+                color: colors.onSurfaceVariant,
+                fontWeight: FontWeight.w600,
+                height: 1.25,
+              ),
             ),
           ),
         ],

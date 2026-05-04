@@ -235,6 +235,136 @@ class _CoachChatPageState extends State<CoachChatPage> {
     return _currentUserId != null && message.senderId == _currentUserId;
   }
 
+  String _recentReplyLabel() {
+    final _ConversationData? conversation = _conversation;
+    final String? currentUserId = _currentUserId;
+    if (conversation == null || currentUserId == null) {
+      return 'Контекст ответа появится после загрузки диалога';
+    }
+
+    final DateTime? lastMessageAt = conversation.lastMessageAt;
+    final String? lastSenderId = conversation.lastMessageSenderId?.trim();
+    if (lastMessageAt == null || lastSenderId == null || lastSenderId.isEmpty) {
+      return 'Недавний отклик пока не виден';
+    }
+
+    final int hours = DateTime.now().difference(lastMessageAt).inHours;
+    if (lastSenderId != currentUserId) {
+      if (hours <= 1) {
+        return 'Клиент недавно ответил';
+      }
+
+      if (hours < 24) {
+        return 'Клиент ответил $hoursч назад';
+      }
+
+      return 'Последний ответ клиента был ${_relativeDayLabel(lastMessageAt)}';
+    }
+
+    if (hours <= 6) {
+      return 'После последнего сообщения ответ еще ожидается';
+    }
+
+    if (hours < 24) {
+      return 'После последнего сообщения клиент пока молчит';
+    }
+
+    return 'Давно нет нового ответа клиента';
+  }
+
+  List<_QuickSuggestion> _quickSuggestions() {
+    final DateTime? lastCheckInAt = _lastCheckInAt;
+    final int? streak = _consistencyStreak;
+    final _ConversationData? conversation = _conversation;
+    final String? currentUserId = _currentUserId;
+    final bool clientWasLastSender =
+        conversation != null && currentUserId != null && conversation.lastMessageSenderId?.trim() == widget.peerUserId.trim();
+    final bool coachWasLastSender =
+        conversation != null && currentUserId != null && conversation.lastMessageSenderId?.trim() == currentUserId;
+    final bool longSilence = conversation?.lastMessageAt != null &&
+        DateTime.now().difference(conversation!.lastMessageAt!).inHours >= 24;
+    final bool recentCheckIn = lastCheckInAt != null && DateTime.now().difference(lastCheckInAt).inHours < 36;
+    final bool stableRhythm = (streak ?? 0) >= 3;
+
+    if (clientWasLastSender) {
+      return const <_QuickSuggestion>[
+        _QuickSuggestion(
+          label: 'Поддержать отклик',
+          icon: Icons.reply_rounded,
+          text: 'Спасибо за ответ. Хочу коротко поддержать ваш текущий шаг и уточнить, что сейчас помогает больше всего.',
+        ),
+        _QuickSuggestion(
+          label: 'Уточнить следующий шаг',
+          icon: Icons.alt_route_rounded,
+          text: 'Вижу ваш отклик. Какой следующий небольшой шаг сейчас выглядит для вас реалистично?',
+        ),
+        _QuickSuggestion(
+          label: 'Углубить рефлексию',
+          icon: Icons.help_outline_rounded,
+          text: 'Что в этом опыте оказалось для вас самым заметным или неожиданным?',
+        ),
+      ];
+    }
+
+    if (coachWasLastSender && longSilence) {
+      return const <_QuickSuggestion>[
+        _QuickSuggestion(
+          label: 'Мягко вернуть контакт',
+          icon: Icons.chat_bubble_outline_rounded,
+          text: 'Хочу бережно вернуться к нашему контакту. Как вы сейчас, без необходимости отвечать подробно?',
+        ),
+        _QuickSuggestion(
+          label: 'Снизить порог шага',
+          icon: Icons.playlist_add_check_rounded,
+          text: 'Если сейчас тяжело держать ритм, можно выбрать совсем маленький шаг на сегодня. Что было бы самым посильным?',
+        ),
+        _QuickSuggestion(
+          label: 'Проверить нагрузку',
+          icon: Icons.support_agent_rounded,
+          text: 'Похоже, сейчас могло стать тише. Это скорее про усталость, перегрузку или просто не до чата?',
+        ),
+      ];
+    }
+
+    if (recentCheckIn || stableRhythm) {
+      return const <_QuickSuggestion>[
+        _QuickSuggestion(
+          label: 'Поддержать ритм',
+          icon: Icons.favorite_border_rounded,
+          text: 'Похоже, ритм сейчас держится. Что помогает вам сохранять это движение?',
+        ),
+        _QuickSuggestion(
+          label: 'Закрепить шаг',
+          icon: Icons.task_alt_rounded,
+          text: 'Хочу помочь закрепить текущий ритм. Какой следующий маленький шаг вы готовы удержать?',
+        ),
+        _QuickSuggestion(
+          label: 'Проверить состояние',
+          icon: Icons.chat_bubble_outline_rounded,
+          text: 'Как вы себя чувствуете на фоне текущего ритма — стало устойчивее или пока волнами?',
+        ),
+      ];
+    }
+
+    return const <_QuickSuggestion>[
+      _QuickSuggestion(
+        label: 'Мягкий чек-ин',
+        icon: Icons.chat_bubble_outline_rounded,
+        text: 'Как вы себя чувствуете после сегодняшнего шага?',
+      ),
+      _QuickSuggestion(
+        label: 'Нужна поддержка',
+        icon: Icons.support_agent_rounded,
+        text: 'Нужна поддержка, хочу уточнить один момент.',
+      ),
+      _QuickSuggestion(
+        label: 'Есть вопрос',
+        icon: Icons.help_outline_rounded,
+        text: 'Есть вопрос по сегодняшнему шагу.',
+      ),
+    ];
+  }
+
   Future<void> _bootstrap() async {
     final int bootstrapToken = ++_bootstrapToken;
     _currentUserId = _client.auth.currentUser?.id;
@@ -840,7 +970,7 @@ class _CoachChatPageState extends State<CoachChatPage> {
         : 'Чек-ин: ${_relativeDayLabel(_lastCheckInAt!)}';
 
     return Padding(
-      padding: const EdgeInsets.fromLTRB(24, 14, 24, 0),
+      padding: const EdgeInsets.fromLTRB(24, 10, 24, 0),
       child: Wrap(
         spacing: 8,
         runSpacing: 8,
@@ -876,12 +1006,10 @@ class _CoachChatPageState extends State<CoachChatPage> {
     final ColorScheme colors = theme.colorScheme;
     final TextTheme textTheme = theme.textTheme;
     final String peerName = widget.peerName.trim().isEmpty ? 'Без имени' : widget.peerName.trim();
-    final String subtitle = _conversation?.lastMessagePreview?.trim().isNotEmpty == true
-        ? _conversation!.lastMessagePreview!.trim()
-        : widget.onlineLabel;
+    final String subtitle = _recentReplyLabel();
 
     return Container(
-      padding: const EdgeInsets.fromLTRB(24, 12, 24, 12),
+      padding: const EdgeInsets.fromLTRB(24, 12, 24, 10),
       decoration: BoxDecoration(
         color: colors.surface,
         border: Border(bottom: BorderSide(color: theme.dividerColor)),
@@ -927,7 +1055,10 @@ class _CoachChatPageState extends State<CoachChatPage> {
                   subtitle,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style: textTheme.labelSmall?.copyWith(color: colors.onSurfaceVariant),
+                  style: textTheme.bodySmall?.copyWith(
+                    color: colors.onSurfaceVariant,
+                    fontWeight: FontWeight.w600,
+                  ),
                 ),
               ],
             ),
@@ -953,6 +1084,7 @@ class _CoachChatPageState extends State<CoachChatPage> {
     final double bottomInset = MediaQuery.of(context).viewInsets.bottom;
     final Uint8List? selectedAttachmentBytes = _selectedAttachmentBytes;
     final String? selectedAttachmentName = _selectedAttachmentFile?.name;
+    final List<_QuickSuggestion> quickSuggestions = _quickSuggestions();
 
     return AnimatedContainer(
       duration: const Duration(milliseconds: 150),
@@ -1027,23 +1159,14 @@ class _CoachChatPageState extends State<CoachChatPage> {
             scrollDirection: Axis.horizontal,
             child: Row(
               children: <Widget>[
-                _ActionChip(
-                  label: 'Мягкий чек-ин',
-                  icon: Icons.chat_bubble_outline_rounded,
-                  onTap: () => _insertQuickText('Как вы себя чувствуете после сегодняшнего шага?'),
-                ),
-                const SizedBox(width: 8),
-                _ActionChip(
-                  label: 'Нужна поддержка',
-                  icon: Icons.support_agent_rounded,
-                  onTap: () => _insertQuickText('Нужна поддержка, хочу уточнить один момент.'),
-                ),
-                const SizedBox(width: 8),
-                _ActionChip(
-                  label: 'Есть вопрос',
-                  icon: Icons.help_outline_rounded,
-                  onTap: () => _insertQuickText('Есть вопрос по сегодняшнему шагу.'),
-                ),
+                for (int index = 0; index < quickSuggestions.length; index++) ...<Widget>[
+                  _ActionChip(
+                    label: quickSuggestions[index].label,
+                    icon: quickSuggestions[index].icon,
+                    onTap: () => _insertQuickText(quickSuggestions[index].text),
+                  ),
+                  if (index != quickSuggestions.length - 1) const SizedBox(width: 8),
+                ],
               ],
             ),
           ),
@@ -1283,9 +1406,31 @@ class _CoachChatPageState extends State<CoachChatPage> {
           isCurrentUser: _isCurrentUserMessage(message),
           timeLabel: _formatTime(message.createdAt),
           messageTypeLabel: _messageTypeLabel(message.messageType),
+          outcomeLabel: _outcomeLabelFor(message),
         );
       },
     );
+  }
+
+  String? _outcomeLabelFor(_ChatMessageRecord message) {
+    if (!_isCurrentUserMessage(message) || message.messageType == 'system' || message.messageType == 'text') {
+      return null;
+    }
+
+    if (message.readAt != null) {
+      return 'Клиент открыл это сообщение';
+    }
+
+    final int hoursSince = DateTime.now().difference(message.createdAt).inHours;
+    if (hoursSince >= 18) {
+      return 'После этого сообщения пока нет подтвержденного отклика';
+    }
+
+    if (hoursSince >= 6) {
+      return 'Сообщение доставлено, ответ еще ожидается';
+    }
+
+    return null;
   }
 
   @override
@@ -1401,18 +1546,32 @@ class _ChatMessageRecord {
   }
 }
 
+class _QuickSuggestion {
+  const _QuickSuggestion({
+    required this.label,
+    required this.icon,
+    required this.text,
+  });
+
+  final String label;
+  final IconData icon;
+  final String text;
+}
+
 class _ChatMessageTile extends StatelessWidget {
   const _ChatMessageTile({
     required this.message,
     required this.isCurrentUser,
     required this.timeLabel,
     required this.messageTypeLabel,
+    this.outcomeLabel,
   });
 
   final _ChatMessageRecord message;
   final bool isCurrentUser;
   final String timeLabel;
   final String messageTypeLabel;
+  final String? outcomeLabel;
 
   _MessagePalette _palette(BuildContext context) {
     final ThemeData theme = Theme.of(context);
@@ -1575,6 +1734,24 @@ class _ChatMessageTile extends StatelessWidget {
             ],
           ],
         ),
+        if (outcomeLabel != null && outcomeLabel!.trim().isNotEmpty) ...<Widget>[
+          const SizedBox(height: 6),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+            decoration: BoxDecoration(
+              color: palette.labelBackground,
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Text(
+              outcomeLabel!,
+              style: textTheme.labelSmall?.copyWith(
+                color: palette.labelForeground,
+                fontWeight: FontWeight.w600,
+                height: 1.25,
+              ),
+            ),
+          ),
+        ],
       ],
     );
   }

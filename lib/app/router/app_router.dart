@@ -294,6 +294,7 @@ class AppRouter {
               arguments: args,
             );
           },
+          onOpenWorkqueue: () => Navigator.of(context).pushNamed(coachPanel),
           onOpenProfile: () => Navigator.of(context).pushNamed(profile),
         );
       },
