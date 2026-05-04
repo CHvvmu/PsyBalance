@@ -887,6 +887,12 @@ class _CoachClientDetailsPageState extends State<CoachClientDetailsPage>
   final TextEditingController _notesController = TextEditingController();
   final ScrollController _scrollController = ScrollController();
 
+  bool _isSummaryExpanded = true;
+  bool _isProgressExpanded = true;
+  bool _isWeeklyStepsExpanded = false;
+  bool _isCheckInsExpanded = false;
+  bool _isTimelineExpanded = false;
+
   bool _isLoading = true;
   bool _isSavingNotes = false;
   bool _notesDirty = false;
@@ -977,6 +983,28 @@ class _CoachClientDetailsPageState extends State<CoachClientDetailsPage>
 
   void _encourageClientStub() {
     _showSnackBar('Мягкая поддержка появится позже.');
+  }
+
+  void _toggleSection(_ClientDetailsSection section) {
+    setState(() {
+      switch (section) {
+        case _ClientDetailsSection.summary:
+          _isSummaryExpanded = !_isSummaryExpanded;
+          break;
+        case _ClientDetailsSection.progress:
+          _isProgressExpanded = !_isProgressExpanded;
+          break;
+        case _ClientDetailsSection.weeklySteps:
+          _isWeeklyStepsExpanded = !_isWeeklyStepsExpanded;
+          break;
+        case _ClientDetailsSection.checkIns:
+          _isCheckInsExpanded = !_isCheckInsExpanded;
+          break;
+        case _ClientDetailsSection.timeline:
+          _isTimelineExpanded = !_isTimelineExpanded;
+          break;
+      }
+    });
   }
 
   Future<void> _loadDetails() async {
@@ -1417,6 +1445,8 @@ class _CoachClientDetailsPageState extends State<CoachClientDetailsPage>
     return _SectionCard(
       title: 'Поведенческая сводка',
       subtitle: 'Мягкий обзор ритма, вовлечённости и регулярности',
+      isExpanded: _isSummaryExpanded,
+      onToggle: () => _toggleSection(_ClientDetailsSection.summary),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: <Widget>[
@@ -1481,6 +1511,8 @@ class _CoachClientDetailsPageState extends State<CoachClientDetailsPage>
     return _SectionCard(
       title: 'Прогресс',
       subtitle: 'Короткие сигналы для оценки общего ритма',
+      isExpanded: _isProgressExpanded,
+      onToggle: () => _toggleSection(_ClientDetailsSection.progress),
       child: Wrap(
         spacing: 12,
         runSpacing: 12,
@@ -1532,6 +1564,8 @@ class _CoachClientDetailsPageState extends State<CoachClientDetailsPage>
     return _SectionCard(
       title: 'Шаги недели',
       subtitle: hasTaskActivity ? data.weekValue : _behaviorStarterHeadline,
+      isExpanded: _isWeeklyStepsExpanded,
+      onToggle: () => _toggleSection(_ClientDetailsSection.weeklySteps),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: <Widget>[
@@ -1606,6 +1640,8 @@ class _CoachClientDetailsPageState extends State<CoachClientDetailsPage>
     return _SectionCard(
       title: 'Свежие чек-ины',
       subtitle: 'Последние эмоциональные отметки без медицинских интерпретаций',
+      isExpanded: _isCheckInsExpanded,
+      onToggle: () => _toggleSection(_ClientDetailsSection.checkIns),
       child: checkIns.isEmpty
           ? Text(
               'Первые чек-ины появятся здесь, как только клиент начнет отмечать состояние.',
@@ -1630,6 +1666,8 @@ class _CoachClientDetailsPageState extends State<CoachClientDetailsPage>
     return _SectionCard(
       title: 'Лента активности',
       subtitle: 'Последние события: задачи, чек-ины, чат и паузы',
+      isExpanded: _isTimelineExpanded,
+      onToggle: () => _toggleSection(_ClientDetailsSection.timeline),
       child: entries.isEmpty
           ? Text(
               'Лента заполнится после первых шагов и откликов.',
@@ -1879,16 +1917,21 @@ class _SectionCard extends StatelessWidget {
     required this.title,
     required this.child,
     this.subtitle,
+    this.isExpanded = true,
+    this.onToggle,
   });
 
   final String title;
   final String? subtitle;
   final Widget child;
+  final bool isExpanded;
+  final VoidCallback? onToggle;
 
   @override
   Widget build(BuildContext context) {
     final ThemeData theme = Theme.of(context);
     final ColorScheme colors = theme.colorScheme;
+    final bool isCollapsible = onToggle != null;
 
     return Container(
       padding: const EdgeInsets.all(16),
@@ -1900,29 +1943,78 @@ class _SectionCard extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: <Widget>[
-          Text(
-            title,
-            style: theme.textTheme.titleMedium?.copyWith(
-              color: colors.onSurface,
-              fontWeight: FontWeight.w800,
-            ),
-          ),
-          if (subtitle != null) ...<Widget>[
-            const SizedBox(height: 4),
-            Text(
-              subtitle!,
-              style: theme.textTheme.bodySmall?.copyWith(
-                color: colors.onSurfaceVariant,
-                height: 1.3,
+          InkWell(
+            onTap: onToggle,
+            borderRadius: BorderRadius.circular(18),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(vertical: 2),
+              child: Row(
+                children: <Widget>[
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: <Widget>[
+                        Text(
+                          title,
+                          style: theme.textTheme.titleMedium?.copyWith(
+                            color: colors.onSurface,
+                            fontWeight: FontWeight.w800,
+                          ),
+                        ),
+                        if (subtitle != null) ...<Widget>[
+                          const SizedBox(height: 4),
+                          Text(
+                            subtitle!,
+                            style: theme.textTheme.bodySmall?.copyWith(
+                              color: colors.onSurfaceVariant,
+                              height: 1.3,
+                            ),
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
+                  if (isCollapsible) ...<Widget>[
+                    const SizedBox(width: 12),
+                    AnimatedRotation(
+                      turns: isExpanded ? 0 : 0.5,
+                      duration: const Duration(milliseconds: 180),
+                      child: Icon(
+                        Icons.keyboard_arrow_up_rounded,
+                        color: colors.onSurfaceVariant,
+                      ),
+                    ),
+                  ],
+                ],
               ),
             ),
-          ],
-          const SizedBox(height: 14),
-          child,
+          ),
+          AnimatedSize(
+            duration: const Duration(milliseconds: 180),
+            curve: Curves.easeInOut,
+            alignment: Alignment.topCenter,
+            child: isExpanded
+                ? Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: <Widget>[
+                      const SizedBox(height: 14),
+                      child,
+                    ],
+                  )
+                : const SizedBox.shrink(),
+          ),
         ],
       ),
     );
   }
+}
+
+enum _ClientDetailsSection {
+  summary,
+  progress,
+  weeklySteps,
+  checkIns,
+  timeline,
 }
 
 class _StatCard extends StatelessWidget {
