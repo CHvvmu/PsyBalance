@@ -953,6 +953,8 @@ class _CoachWorkqueuePageState extends State<CoachWorkqueuePage> {
     );
 
     bool submitting = false;
+    String? requestKey;
+    String? requestDraft;
 
     try {
       await showDialog<void>(
@@ -969,6 +971,11 @@ class _CoachWorkqueuePageState extends State<CoachWorkqueuePage> {
                   return;
                 }
 
+                if (requestKey == null || requestDraft != draft) {
+                  requestKey = 'coach-workqueue:${entry.id}:${preset.key}:${DateTime.now().microsecondsSinceEpoch}';
+                  requestDraft = draft;
+                }
+
                 setModalState(() {
                   submitting = true;
                 });
@@ -977,6 +984,7 @@ class _CoachWorkqueuePageState extends State<CoachWorkqueuePage> {
                   entry: entry,
                   preset: preset,
                   draft: draft,
+                  requestKey: requestKey!,
                 );
 
                 if (!mounted) {
@@ -1131,6 +1139,7 @@ class _CoachWorkqueuePageState extends State<CoachWorkqueuePage> {
     required _CoachWorkqueueEntry entry,
     required _InterventionPreset preset,
     required String draft,
+    required String requestKey,
   }) async {
     final User? currentUser = _client.auth.currentUser;
     if (currentUser == null) {
@@ -1173,6 +1182,7 @@ class _CoachWorkqueuePageState extends State<CoachWorkqueuePage> {
           'p_content': draft,
           'p_message_type': preset.messageType,
           'p_metadata': messageMetadata,
+          'p_request_key': requestKey,
         },
       );
 

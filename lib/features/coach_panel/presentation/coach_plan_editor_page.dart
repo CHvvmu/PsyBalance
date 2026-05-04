@@ -92,10 +92,11 @@ class _CoachPlanEditorPageState extends State<CoachPlanEditorPage> {
               sourceLabel: 'coach-plan-editor',
             );
 
-      final List<PlanItemData> items = rows
-          .map((Map<String, dynamic> rowData) => PlanItemData.fromMap(rowData))
-          .toList()
-        ..sort(_compareItemsByCreatedAt);
+      final List<PlanItemData> items = await buildPlanItemsFromProjectedRows(
+        client: _client,
+        rows: rows,
+      );
+      items.sort(_compareItemsByCreatedAt);
 
       debugPrint(
         'COACH PLAN LOAD SUCCESS: clientId=$clientId planId=${planId ?? ''} items=${items.length}',

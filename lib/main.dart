@@ -1,5 +1,6 @@
 import 'app/app.dart';
 import 'core/config/app_config.dart';
+import 'core/services/auth_bootstrap.dart';
 import 'package:flutter/widgets.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
@@ -19,6 +20,8 @@ Future<void> main() async {
       ),
     ),
   );
+
+  await AuthBootstrap.ensureReady();
 
   runApp(const PsyBalanceApp());
 }

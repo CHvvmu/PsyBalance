@@ -184,10 +184,11 @@ class _ClientPlanPageState extends State<ClientPlanPage> {
         sourceLabel: 'client-plan-page',
       );
 
-      final List<PlanItemData> items = rows
-          .map((Map<String, dynamic> rowData) => PlanItemData.fromMap(rowData))
-          .toList()
-        ..sort(_compareItemsByCreatedAt);
+      final List<PlanItemData> items = await buildPlanItemsFromProjectedRows(
+        client: _client,
+        rows: rows,
+      );
+      items.sort(_compareItemsByCreatedAt);
 
       debugPrint(
         'CLIENT PLAN LOAD SUCCESS: userId=${currentUser.id} planId=$planId items=${items.length}',

@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../../core/config/app_config.dart';
+import '../../core/services/auth_bootstrap.dart';
 import '../../core/services/supabase_service.dart';
 import 'auth_failure.dart';
 import 'user_role.dart';
@@ -63,6 +64,8 @@ class AuthService {
   }
 
   Future<void> loadUserRole() async {
+    await AuthBootstrap.ensureReady();
+
     final User? user = _client.auth.currentUser;
     if (user == null) {
       debugPrint('ROLE LOAD: skipped, user is null');
@@ -102,6 +105,8 @@ class AuthService {
   }
 
   Future<UserRole> getUserRole({bool forceRefresh = false}) async {
+    await AuthBootstrap.ensureReady();
+
     if (!forceRefresh && _cachedRole != null) {
       return _cachedRole!;
     }
@@ -260,6 +265,8 @@ class AuthService {
     );
 
     try {
+      AuthBootstrap.beginPendingTransition();
+
       final AuthResponse response;
       try {
         response = await _client.auth.signUp(
@@ -289,14 +296,20 @@ class AuthService {
         persistFallbackRoleToUsersTable: true,
       );
 
+      if (response.session == null) {
+        AuthBootstrap.cancelPendingTransition();
+      }
+
       return RegisterResult(
         user: response.user,
         session: response.session,
         role: resolvedRole,
       );
     } on AuthException catch (e) {
+      AuthBootstrap.cancelPendingTransition();
       throw AuthFailure(_mapSignUpError(e));
     } catch (_) {
+      AuthBootstrap.cancelPendingTransition();
       throw AuthFailure('Network error. Please try again.');
     }
   }
@@ -314,6 +327,8 @@ class AuthService {
     }
 
     try {
+      AuthBootstrap.beginPendingTransition();
+
       final AuthResponse response = await _client.auth.signInWithPassword(
         email: normalizedEmail,
         password: password,
@@ -325,23 +340,34 @@ class AuthService {
         persistFallbackRoleToUsersTable: false,
       );
 
+      if (response.session == null) {
+        AuthBootstrap.cancelPendingTransition();
+      }
+
       return LoginResult(
         session: response.session,
         role: resolvedRole,
       );
     } on AuthException catch (e) {
+      AuthBootstrap.cancelPendingTransition();
       throw AuthFailure(e.message);
     } catch (_) {
+      AuthBootstrap.cancelPendingTransition();
       throw AuthFailure('Network error. Please try again.');
     }
   }
 
   Future<void> logout() async {
     try {
+      AuthBootstrap.beginPendingTransition();
       await _client.auth.signOut();
       clearRoleCache();
     } on AuthException catch (e) {
+      AuthBootstrap.cancelPendingTransition();
       throw AuthFailure(e.message);
+    } catch (_) {
+      AuthBootstrap.cancelPendingTransition();
+      rethrow;
     }
   }
 
@@ -414,11 +440,13 @@ class AuthService {
 
   Future<UserRole?> _tryReadRoleFromUsersTable({required String userId}) async {
     try {
-      final Map<String, dynamic>? row = await _client
-          .from('users')
-          .select('role')
-          .eq('id', userId)
-          .maybeSingle();
+      final Map<String, dynamic>? row = await AuthBootstrap.safeQuery(
+        (SupabaseClient client) => client
+            .from('users')
+            .select('role')
+            .eq('id', userId)
+            .maybeSingle(),
+      );
       return UserRoleMapper.fromValue(row?['role'] as String?);
     } on PostgrestException {
       return null;
@@ -428,6 +456,8 @@ class AuthService {
   }
 
   Future<UserRole?> _fetchRoleFromUsersTableByAuthUid() async {
+    await AuthBootstrap.ensureReady();
+
     final String? authUserId = currentUser?.id;
     if (authUserId == null) {
       return null;
@@ -442,6 +472,8 @@ class AuthService {
     String? explicitEmail,
     required bool persistFallbackRoleToUsersTable,
   }) async {
+    await AuthBootstrap.ensureReady();
+
     final UserRole? roleFromAuthUid = await _fetchRoleFromUsersTableByAuthUid();
     if (roleFromAuthUid != null) {
       _setRoleCache(roleFromAuthUid);
@@ -496,20 +528,24 @@ class AuthService {
     try {
       final String? resolvedEmail = _resolveEmailForUsersTable(email: email);
       if (resolvedEmail == null) {
-        await _client
-            .from('users')
-            .update(<String, dynamic>{'role': role.value})
-            .eq('id', userId);
+        await AuthBootstrap.safeQuery(
+          (SupabaseClient client) => client
+              .from('users')
+              .update(<String, dynamic>{'role': role.value})
+              .eq('id', userId),
+        );
         return;
       }
 
-      await _client.from('users').upsert(
-        <String, dynamic>{
-          'id': userId,
-          'email': resolvedEmail,
-          'role': role.value,
-        },
-        onConflict: 'id',
+      await AuthBootstrap.safeQuery(
+        (SupabaseClient client) => client.from('users').upsert(
+          <String, dynamic>{
+            'id': userId,
+            'email': resolvedEmail,
+            'role': role.value,
+          },
+          onConflict: 'id',
+        ),
       );
     } on PostgrestException {
       return;

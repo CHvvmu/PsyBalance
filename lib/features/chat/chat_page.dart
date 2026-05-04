@@ -49,6 +49,10 @@ class _CoachChatPageState extends State<CoachChatPage> {
 
   int _bootstrapToken = 0;
   bool _reloadRequestedWhileLoading = false;
+  bool _reloadRequestedMarkReadAfterLoad = false;
+  String? _pendingSendRequestKey;
+  String? _pendingSendDraft;
+  int _sendRequestSequence = 0;
 
   String? _currentUserId;
   String? _conversationId;
@@ -228,6 +232,9 @@ class _CoachChatPageState extends State<CoachChatPage> {
         _messages = <_ChatMessageRecord>[];
         _isLoadingMessages = false;
         _reloadRequestedWhileLoading = false;
+        _reloadRequestedMarkReadAfterLoad = false;
+        _pendingSendRequestKey = null;
+        _pendingSendDraft = null;
       });
     }
 
@@ -379,8 +386,14 @@ class _CoachChatPageState extends State<CoachChatPage> {
     int bootstrapToken, {
     required bool markReadAfterLoad,
   }) async {
+    if (bootstrapToken != _bootstrapToken) {
+      return;
+    }
+
     if (_isLoadingMessages) {
       _reloadRequestedWhileLoading = true;
+      _reloadRequestedMarkReadAfterLoad =
+          _reloadRequestedMarkReadAfterLoad || markReadAfterLoad;
       return;
     }
 
@@ -427,9 +440,12 @@ class _CoachChatPageState extends State<CoachChatPage> {
     } finally {
       _isLoadingMessages = false;
 
-      if (_reloadRequestedWhileLoading && mounted && bootstrapToken == _bootstrapToken) {
+      if (_reloadRequestedWhileLoading && mounted) {
+        final bool shouldMarkReadAfterLoad =
+            _reloadRequestedMarkReadAfterLoad || markReadAfterLoad;
         _reloadRequestedWhileLoading = false;
-        unawaited(_loadMessages(conversationId, bootstrapToken, markReadAfterLoad: markReadAfterLoad));
+        _reloadRequestedMarkReadAfterLoad = false;
+        _scheduleRefresh(markReadAfterLoad: shouldMarkReadAfterLoad);
       }
     }
   }
@@ -442,6 +458,7 @@ class _CoachChatPageState extends State<CoachChatPage> {
     }
 
     final RealtimeChannel channel = _client.channel('chat-conversation-$conversationId');
+    _messagesChannel = channel;
     channel.onPostgresChanges(
       event: PostgresChangeEvent.all,
       schema: 'public',
@@ -452,6 +469,10 @@ class _CoachChatPageState extends State<CoachChatPage> {
         value: conversationId,
       ),
       callback: (payload) {
+        if (!mounted || bootstrapToken != _bootstrapToken || _conversationId != conversationId) {
+          return;
+        }
+
         debugPrint(
           'CHAT REALTIME EVENT: conversationId=$conversationId eventType=${payload.eventType}',
         );
@@ -466,10 +487,11 @@ class _CoachChatPageState extends State<CoachChatPage> {
 
       if (status == RealtimeSubscribeStatus.subscribed) {
         debugPrint('CHAT REALTIME SUBSCRIBED: conversationId=$conversationId');
+        if (mounted && bootstrapToken == _bootstrapToken && _conversationId == conversationId) {
+          _scheduleRefresh(markReadAfterLoad: true);
+        }
       }
     });
-
-    _messagesChannel = channel;
   }
 
   Future<void> _disposeRealtimeChannel() async {
@@ -495,17 +517,19 @@ class _CoachChatPageState extends State<CoachChatPage> {
 
   void _scheduleRefresh({required bool markReadAfterLoad}) {
     final String? conversationId = _conversationId;
+    final int bootstrapToken = _bootstrapToken;
     if (conversationId == null || conversationId.isEmpty) {
       return;
     }
 
     _refreshDebounce?.cancel();
     _refreshDebounce = Timer(const Duration(milliseconds: 120), () {
-      if (!mounted) {
+      // Ignore delayed refreshes that belong to a previous bootstrap.
+      if (!mounted || bootstrapToken != _bootstrapToken) {
         return;
       }
 
-      unawaited(_loadMessages(conversationId, _bootstrapToken, markReadAfterLoad: markReadAfterLoad));
+      unawaited(_loadMessages(conversationId, bootstrapToken, markReadAfterLoad: markReadAfterLoad));
     });
   }
 
@@ -538,6 +562,12 @@ class _CoachChatPageState extends State<CoachChatPage> {
     }
 
     final String draft = _messageController.text;
+    final String requestKey = _pendingSendRequestKey != null && _pendingSendDraft == content
+        ? _pendingSendRequestKey!
+        : 'chat:$conversationId:${DateTime.now().microsecondsSinceEpoch}:${_sendRequestSequence++}';
+    _pendingSendRequestKey = requestKey;
+    _pendingSendDraft = content;
+
     setState(() {
       _isSendingMessage = true;
     });
@@ -552,11 +582,14 @@ class _CoachChatPageState extends State<CoachChatPage> {
           'p_content': content,
           'p_message_type': 'text',
           'p_metadata': _messageMetadata(trigger: 'manual_message'),
+          'p_request_key': requestKey,
         },
       );
 
       final Map<String, dynamic>? row = _singleRowFromRpc(result);
       if (row != null) {
+        _pendingSendRequestKey = null;
+        _pendingSendDraft = null;
         _scheduleRefresh(markReadAfterLoad: false);
       } else {
         unawaited(_loadMessages(conversationId, _bootstrapToken, markReadAfterLoad: false));

@@ -13,3 +13,7 @@ build/
 # Environment
 .env
 
+tmp_*
+*.tmp
+debug_*.py
+scratch_*.py

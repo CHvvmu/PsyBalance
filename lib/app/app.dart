@@ -6,6 +6,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../core/theme/app_theme.dart';
 import '../core/navigation/app_route_observer.dart';
+import '../core/services/auth_bootstrap.dart';
 import '../features/auth/auth_failure.dart';
 import '../features/auth/auth_service.dart';
 import '../features/auth/user_role.dart';
@@ -85,6 +86,8 @@ class _PsyBalanceAppState extends State<PsyBalanceApp> {
     required bool forceRefresh,
     bool preferOnboardingForClient = false,
   }) async {
+    await AuthBootstrap.ensureReady();
+
     if (_isResolvingRole) {
       return;
     }

@@ -1004,24 +1004,25 @@ class _DailyPlanSectionState extends State<_DailyPlanSection> with RouteAware {
         sourceLabel: 'dashboard-plan-section',
       );
 
-      final List<PlanItemData> items = rows
-          .map((Map<String, dynamic> rowData) => PlanItemData.fromMap(rowData))
-          .toList()
-        ..sort((PlanItemData left, PlanItemData right) {
-          final DateTime? leftCreated = left.createdAt;
-          final DateTime? rightCreated = right.createdAt;
+      final List<PlanItemData> items = await buildPlanItemsFromProjectedRows(
+        client: _client,
+        rows: rows,
+      );
+      items.sort((PlanItemData left, PlanItemData right) {
+        final DateTime? leftCreated = left.createdAt;
+        final DateTime? rightCreated = right.createdAt;
 
-          if (leftCreated == null && rightCreated == null) {
-            return 0;
-          }
-          if (leftCreated == null) {
-            return 1;
-          }
-          if (rightCreated == null) {
-            return -1;
-          }
-          return leftCreated.compareTo(rightCreated);
-        });
+        if (leftCreated == null && rightCreated == null) {
+          return 0;
+        }
+        if (leftCreated == null) {
+          return 1;
+        }
+        if (rightCreated == null) {
+          return -1;
+        }
+        return leftCreated.compareTo(rightCreated);
+      });
 
       if (items.isEmpty) {
         debugPrint('PLAN LOAD EMPTY: plan_id=$planId items=0');
@@ -1405,9 +1406,7 @@ class _CoachSupportSectionState extends State<_CoachSupportSection> {
           .limit(1)
           .maybeSingle();
 
-      debugPrint(
-        'COACH SUPPORT RELATIONSHIP LOADED: userId=${currentUser.id} hasRow=${clientRow != null}',
-      );
+      debugPrint('COACH SUPPORT RELATIONSHIP LOADED: userId=${currentUser.id} hasRow=${clientRow != null}');
 
       final String coachId = clientRow?['coach_id']?.toString().trim() ?? '';
       if (coachId.isEmpty) {
@@ -1432,9 +1431,7 @@ class _CoachSupportSectionState extends State<_CoachSupportSection> {
           .eq('id', coachId)
           .maybeSingle();
 
-      debugPrint(
-        'COACH SUPPORT PROFILE LOADED: coachId=$coachId hasRow=${coachRow != null}',
-      );
+      debugPrint('COACH SUPPORT PROFILE LOADED: coachId=$coachId hasRow=${coachRow != null}');
 
       if (!mounted) {
         return;

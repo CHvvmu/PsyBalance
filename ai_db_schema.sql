@@ -1805,6 +1805,7 @@ begin
   new.message_type := lower(coalesce(nullif(btrim(coalesce(new.message_type, '')), ''), 'text'));
   new.sender_role := lower(coalesce(nullif(btrim(coalesce(new.sender_role, '')), ''), 'client'));
   new.metadata := coalesce(new.metadata, '{}'::jsonb);
+  new.request_key := lower(nullif(btrim(coalesce(new.request_key, '')), ''));
 
   if new.content is null or btrim(new.content) = '' then
     new.content := nullif(btrim(coalesce(new.text, '')), '');
@@ -1871,6 +1872,7 @@ create table if not exists public.messages (
   message_type text default 'text',
   content text,
   metadata jsonb default '{}'::jsonb,
+  request_key text,
   read_at timestamp with time zone,
   edited_at timestamp with time zone,
   deleted_at timestamp with time zone,
@@ -1885,6 +1887,7 @@ alter table public.messages
   add column if not exists message_type text default 'text',
   add column if not exists content text,
   add column if not exists metadata jsonb default '{}'::jsonb,
+  add column if not exists request_key text,
   add column if not exists read_at timestamp with time zone,
   add column if not exists edited_at timestamp with time zone,
   add column if not exists deleted_at timestamp with time zone,
@@ -1927,12 +1930,17 @@ set message_type = coalesce(nullif(btrim(message_type), ''), 'text');
 update public.messages
 set sender_role = coalesce(nullif(btrim(sender_role), ''), 'client');
 
+update public.messages
+set request_key = lower(nullif(btrim(request_key), ''))
+where request_key is not null;
+
 create index if not exists idx_messages_conversation_id on public.messages(conversation_id);
 create index if not exists idx_messages_conversation_created_at on public.messages(conversation_id, created_at desc);
 create index if not exists idx_messages_sender_id on public.messages(sender_id);
 create index if not exists idx_messages_receiver_id on public.messages(receiver_id);
 create index if not exists idx_messages_created_at on public.messages(created_at desc);
 create index if not exists idx_messages_unread_receiver on public.messages(receiver_id, conversation_id, created_at desc) where read_at is null and deleted_at is null;
+create unique index if not exists idx_messages_request_key on public.messages(conversation_id, request_key) where request_key is not null;
 
 alter table public.messages
   enable row level security;
@@ -2161,7 +2169,8 @@ create or replace function public.send_chat_message(
   p_conversation_id uuid,
   p_content text,
   p_message_type text default 'text',
-  p_metadata jsonb default '{}'::jsonb
+  p_metadata jsonb default '{}'::jsonb,
+  p_request_key text default null
 )
 returns public.messages
 language plpgsql
@@ -2175,6 +2184,7 @@ declare
   v_receiver_id uuid;
   v_message public.messages%rowtype;
   v_message_type text := lower(nullif(btrim(coalesce(p_message_type, '')), ''));
+  v_request_key text := lower(nullif(btrim(coalesce(p_request_key, '')), ''));
 begin
   if v_current_user_id is null then
     raise exception 'Not authenticated' using errcode = '28000';
@@ -2190,6 +2200,10 @@ begin
 
   if v_message_type not in ('text', 'system', 'intervention', 'reflection_prompt', 'coach_note', 'checkin_followup') then
     raise exception 'Unsupported message type: %', p_message_type using errcode = '23514';
+  end if;
+
+  if v_request_key is null then
+    raise exception 'Request key is required' using errcode = '23502';
   end if;
 
   select *
@@ -2220,32 +2234,59 @@ begin
     raise exception 'Message content is required' using errcode = '23502';
   end if;
 
+  select *
+  into v_message
+  from public.messages
+  where conversation_id = p_conversation_id
+    and request_key = v_request_key
+  limit 1;
+
+  if v_message.id is not null then
+    return v_message;
+  end if;
+
   v_receiver_id := case
     when v_current_user_id = v_conversation.client_id then v_conversation.coach_id
     else v_conversation.client_id
   end;
 
-  insert into public.messages (
-    conversation_id,
-    sender_id,
-    receiver_id,
-    sender_role,
-    message_type,
-    content,
-    text,
-    metadata
-  )
-  values (
-    p_conversation_id,
-    v_current_user_id,
-    v_receiver_id,
-    v_sender_role,
-    v_message_type,
-    btrim(p_content),
-    btrim(p_content),
-    coalesce(p_metadata, '{}'::jsonb)
-  )
-  returning * into v_message;
+  begin
+    insert into public.messages (
+      conversation_id,
+      sender_id,
+      receiver_id,
+      sender_role,
+      message_type,
+      content,
+      text,
+      metadata,
+      request_key
+    )
+    values (
+      p_conversation_id,
+      v_current_user_id,
+      v_receiver_id,
+      v_sender_role,
+      v_message_type,
+      btrim(p_content),
+      btrim(p_content),
+      coalesce(p_metadata, '{}'::jsonb),
+      v_request_key
+    )
+    returning * into v_message;
+  exception
+    when unique_violation then
+      select *
+      into v_message
+      from public.messages
+      where conversation_id = p_conversation_id
+        and request_key = v_request_key
+      limit 1;
+
+      if v_message.id is null then
+        raise;
+      end if;
+  end;
 
   return v_message;
 end;
@@ -2284,6 +2325,11 @@ begin
   return v_rows;
 end;
 $$;
+
+grant usage on schema public to authenticated;
+grant execute on function public.get_or_create_direct_conversation(uuid) to authenticated;
+grant execute on function public.send_chat_message(uuid, text, text, jsonb, text) to authenticated;
+grant execute on function public.mark_conversation_messages_read(uuid) to authenticated;
 
 create or replace function public.get_conversation_unread_count(p_conversation_id uuid)
 returns bigint
@@ -2513,6 +2559,18 @@ language sql
 immutable
 as $$
   select lower(coalesce(nullif(btrim(p_request_key), ''), format('task:%s:%s', p_task_id, coalesce(nullif(btrim(p_action), ''), 'event'))));
+$$;
+
+create or replace function public._behavior_message_request_key(
+  p_conversation_id uuid,
+  p_message_type text,
+  p_request_key text default null
+)
+returns text
+language sql
+immutable
+as $$
+  select lower(coalesce(nullif(btrim(p_request_key), ''), format('message:%s:%s', p_conversation_id, coalesce(nullif(btrim(p_message_type), ''), 'text'))));
 $$;
 
 create or replace function public._behavior_task_owner_id(p_task_id uuid)

@@ -61,3 +61,10 @@ This made cross-domain behavior observable in one sequence.
 This is the first phase where the system can describe why a coach action happened
 and what the response to it was, without pretending to be autonomous.
 
+## Phase 4.5.1 — Task system recovery
+
+- PHASE 4.5.1 completed
+- canonical task lifecycle stabilized
+- active plan loading restored
+- projection semantics fixed
+- coach/client task synchronization operational
