@@ -389,7 +389,8 @@ create or replace function public.send_chat_message(
   p_content text,
   p_message_type text default 'text',
   p_metadata jsonb default '{}'::jsonb,
-  p_request_key text default null
+  p_request_key text default null,
+  p_image_url text default null
 )
 returns public.messages
 language plpgsql
@@ -404,6 +405,8 @@ declare
   v_message public.messages%rowtype;
   v_message_type text := lower(nullif(btrim(coalesce(p_message_type, '')), ''));
   v_request_key text := lower(nullif(btrim(coalesce(p_request_key, '')), ''));
+  v_content text := nullif(btrim(coalesce(p_content, '')), '');
+  v_image_url text := nullif(btrim(coalesce(p_image_url, '')), '');
 begin
   if v_current_user_id is null then
     raise exception 'Not authenticated' using errcode = '28000';
@@ -449,8 +452,8 @@ begin
     v_sender_role := 'client';
   end if;
 
-  if nullif(btrim(coalesce(p_content, '')), '') is null then
-    raise exception 'Message content is required' using errcode = '23502';
+  if v_content is null and v_image_url is null then
+    raise exception 'Message content or image is required' using errcode = '23502';
   end if;
 
   select *
@@ -478,6 +481,7 @@ begin
       message_type,
       content,
       text,
+      image_url,
       metadata,
       request_key
     )
@@ -487,8 +491,9 @@ begin
       v_receiver_id,
       v_sender_role,
       v_message_type,
-      btrim(p_content),
-      btrim(p_content),
+      v_content,
+      v_content,
+      v_image_url,
       coalesce(p_metadata, '{}'::jsonb),
       v_request_key
     )
@@ -595,6 +600,79 @@ create trigger messages_guard_update
 after update on public.messages
 for each row execute function public._behavior_guard_message_update();
 
+insert into storage.buckets (id, name, public)
+values ('chat_images', 'chat_images', true)
+on conflict (id) do update set public = excluded.public;
+
+drop policy if exists "chat_images_insert_conversation_files" on storage.objects;
+
+create policy "chat_images_insert_conversation_files"
+on storage.objects
+for insert
+to authenticated
+with check (
+  bucket_id = 'chat_images'
+  and exists (
+    select 1
+    from public.conversations c
+    where c.id::text = (storage.foldername(name))[1]
+      and (
+        c.client_id = auth.uid()
+        or c.coach_id = auth.uid()
+      )
+  )
+);
+
+drop policy if exists "chat_images_update_conversation_files" on storage.objects;
+
+create policy "chat_images_update_conversation_files"
+on storage.objects
+for update
+to authenticated
+using (
+  bucket_id = 'chat_images'
+  and exists (
+    select 1
+    from public.conversations c
+    where c.id::text = (storage.foldername(name))[1]
+      and (
+        c.client_id = auth.uid()
+        or c.coach_id = auth.uid()
+      )
+  )
+)
+with check (
+  bucket_id = 'chat_images'
+  and exists (
+    select 1
+    from public.conversations c
+    where c.id::text = (storage.foldername(name))[1]
+      and (
+        c.client_id = auth.uid()
+        or c.coach_id = auth.uid()
+      )
+  )
+);
+
+drop policy if exists "chat_images_select_conversation_files" on storage.objects;
+
+create policy "chat_images_select_conversation_files"
+on storage.objects
+for select
+to authenticated
+using (
+  bucket_id = 'chat_images'
+  and exists (
+    select 1
+    from public.conversations c
+    where c.id::text = (storage.foldername(name))[1]
+      and (
+        c.client_id = auth.uid()
+        or c.coach_id = auth.uid()
+      )
+  )
+);
+
 grant usage on schema public to authenticated;
 grant select, insert on table public.conversations to authenticated;
 grant select, insert, update, delete on table public.messages to authenticated;
@@ -602,7 +680,7 @@ grant select, insert, update, delete on table public.messages to authenticated;
 grant execute on function public._behavior_is_conversation_participant(uuid) to authenticated;
 
 grant execute on function public.get_or_create_direct_conversation(uuid) to authenticated;
-grant execute on function public.send_chat_message(uuid, text, text, jsonb, text) to authenticated;
+grant execute on function public.send_chat_message(uuid, text, text, jsonb, text, text) to authenticated;
 grant execute on function public.mark_conversation_messages_read(uuid) to authenticated;
 
 notify pgrst, 'reload schema';

@@ -1,5 +1,7 @@
 import 'dart:async';
+import 'dart:typed_data';
 
+import 'package:image_picker/image_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
@@ -35,6 +37,7 @@ class _CoachChatPageState extends State<CoachChatPage> {
   );
 
   final SupabaseClient _client = Supabase.instance.client;
+  final ImagePicker _imagePicker = ImagePicker();
   late final TextEditingController _messageController;
   final ScrollController _scrollController = ScrollController();
 
@@ -52,6 +55,9 @@ class _CoachChatPageState extends State<CoachChatPage> {
   bool _reloadRequestedMarkReadAfterLoad = false;
   String? _pendingSendRequestKey;
   String? _pendingSendDraft;
+  String? _pendingSendAttachmentName;
+  XFile? _selectedAttachmentFile;
+  Uint8List? _selectedAttachmentBytes;
   int _sendRequestSequence = 0;
 
   String? _currentUserId;
@@ -69,6 +75,7 @@ class _CoachChatPageState extends State<CoachChatPage> {
   void initState() {
     super.initState();
     _messageController = TextEditingController(text: widget.initialDraft);
+    _messageController.addListener(_handleComposerChanged);
     unawaited(_bootstrap());
   }
 
@@ -84,11 +91,20 @@ class _CoachChatPageState extends State<CoachChatPage> {
 
   @override
   void dispose() {
+    _messageController.removeListener(_handleComposerChanged);
     _messageController.dispose();
     _scrollController.dispose();
     _refreshDebounce?.cancel();
     unawaited(_disposeRealtimeChannel());
     super.dispose();
+  }
+
+  void _handleComposerChanged() {
+    if (!mounted) {
+      return;
+    }
+
+    setState(() {});
   }
 
   int? _toInt(Object? value) {
@@ -235,6 +251,9 @@ class _CoachChatPageState extends State<CoachChatPage> {
         _reloadRequestedMarkReadAfterLoad = false;
         _pendingSendRequestKey = null;
         _pendingSendDraft = null;
+        _pendingSendAttachmentName = null;
+        _selectedAttachmentFile = null;
+        _selectedAttachmentBytes = null;
       });
     }
 
@@ -556,17 +575,28 @@ class _CoachChatPageState extends State<CoachChatPage> {
   Future<void> _sendMessage() async {
     final String content = _messageController.text.trim();
     final String? conversationId = _conversationId;
+    final XFile? selectedAttachmentFile = _selectedAttachmentFile;
+    final Uint8List? selectedAttachmentBytes = _selectedAttachmentBytes;
 
-    if (content.isEmpty || conversationId == null || conversationId.isEmpty || _isSendingMessage) {
+    if ((content.isEmpty && selectedAttachmentBytes == null) ||
+        conversationId == null ||
+        conversationId.isEmpty ||
+        _isSendingMessage) {
       return;
     }
 
     final String draft = _messageController.text;
-    final String requestKey = _pendingSendRequestKey != null && _pendingSendDraft == content
+    final String? attachmentName = selectedAttachmentFile?.name.trim().toLowerCase();
+    final bool shouldReusePendingRequestKey =
+        _pendingSendRequestKey != null &&
+        _pendingSendDraft == content &&
+        _pendingSendAttachmentName == attachmentName;
+    final String requestKey = shouldReusePendingRequestKey
         ? _pendingSendRequestKey!
         : 'chat:$conversationId:${DateTime.now().microsecondsSinceEpoch}:${_sendRequestSequence++}';
     _pendingSendRequestKey = requestKey;
     _pendingSendDraft = content;
+    _pendingSendAttachmentName = attachmentName;
 
     setState(() {
       _isSendingMessage = true;
@@ -575,6 +605,16 @@ class _CoachChatPageState extends State<CoachChatPage> {
     _messageController.clear();
 
     try {
+      String? imageUrl;
+      if (selectedAttachmentFile != null && selectedAttachmentBytes != null) {
+        imageUrl = await _uploadChatImage(
+          conversationId: conversationId,
+          requestKey: requestKey,
+          attachmentFile: selectedAttachmentFile,
+          attachmentBytes: selectedAttachmentBytes,
+        );
+      }
+
       final dynamic result = await _client.rpc(
         'send_chat_message',
         params: <String, dynamic>{
@@ -583,6 +623,7 @@ class _CoachChatPageState extends State<CoachChatPage> {
           'p_message_type': 'text',
           'p_metadata': _messageMetadata(trigger: 'manual_message'),
           'p_request_key': requestKey,
+          'p_image_url': imageUrl,
         },
       );
 
@@ -590,6 +631,13 @@ class _CoachChatPageState extends State<CoachChatPage> {
       if (row != null) {
         _pendingSendRequestKey = null;
         _pendingSendDraft = null;
+        _pendingSendAttachmentName = null;
+        if (mounted) {
+          setState(() {
+            _selectedAttachmentFile = null;
+            _selectedAttachmentBytes = null;
+          });
+        }
         _scheduleRefresh(markReadAfterLoad: false);
       } else {
         unawaited(_loadMessages(conversationId, _bootstrapToken, markReadAfterLoad: false));
@@ -602,7 +650,7 @@ class _CoachChatPageState extends State<CoachChatPage> {
           TextPosition(offset: draft.length),
         );
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Не удалось отправить сообщение')),
+          const SnackBar(content: Text('Не удалось отправить сообщение с изображением')),
         );
       }
     } finally {
@@ -622,9 +670,116 @@ class _CoachChatPageState extends State<CoachChatPage> {
   }
 
   void _showAttachmentPlaceholder() {
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Вложения подключим следующим этапом')),
+    unawaited(_pickAttachmentImage());
+  }
+
+  String _buildChatImageStoragePath({
+    required String conversationId,
+    required String requestKey,
+    required String fileName,
+  }) {
+    final String normalizedName = fileName.trim().isEmpty ? 'image.jpg' : fileName.trim().toLowerCase();
+    final String safeName = normalizedName.replaceAll(RegExp(r'[^a-z0-9._-]'), '_');
+    final String safeRequestKey = requestKey.toLowerCase().replaceAll(RegExp(r'[^a-z0-9:_-]'), '_');
+    return '$conversationId/$safeRequestKey/$safeName';
+  }
+
+  Future<void> _pickAttachmentImage() async {
+    if (_isSendingMessage) {
+      return;
+    }
+
+    try {
+      final XFile? pickedImage = await _imagePicker.pickImage(
+        source: ImageSource.gallery,
+        imageQuality: 85,
+      );
+
+      if (pickedImage == null) {
+        return;
+      }
+
+      final Uint8List bytes = await pickedImage.readAsBytes();
+      if (bytes.isEmpty) {
+        throw Exception('Selected image is empty');
+      }
+
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _selectedAttachmentFile = pickedImage;
+        _selectedAttachmentBytes = bytes;
+      });
+    } catch (error) {
+      debugPrint('CHAT ATTACHMENT PICK ERROR: error=$error');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Не удалось выбрать изображение')),
+        );
+      }
+    }
+  }
+
+  void _removeSelectedAttachment() {
+    if (_selectedAttachmentFile == null && _selectedAttachmentBytes == null) {
+      return;
+    }
+
+    setState(() {
+      _selectedAttachmentFile = null;
+      _selectedAttachmentBytes = null;
+    });
+  }
+
+  Future<String> _uploadChatImage({
+    required String conversationId,
+    required String requestKey,
+    required XFile attachmentFile,
+    required Uint8List attachmentBytes,
+  }) async {
+    final String storagePath = _buildChatImageStoragePath(
+      conversationId: conversationId,
+      requestKey: requestKey,
+      fileName: attachmentFile.name,
     );
+    final storage = _client.storage.from('chat_images');
+    final String? currentUserId = _client.auth.currentUser?.id;
+    final bool hasSession = _client.auth.currentSession != null;
+    final String mimeType = attachmentFile.mimeType ?? 'image/jpeg';
+
+    debugPrint(
+      'CHAT IMAGE UPLOAD START: bucket=chat_images conversationId=$conversationId '
+      'userId=$currentUserId hasSession=$hasSession path=$storagePath '
+      'fileName=${attachmentFile.name} mimeType=$mimeType bytes=${attachmentBytes.length}',
+    );
+
+    try {
+      await storage.uploadBinary(
+        storagePath,
+        attachmentBytes,
+        fileOptions: FileOptions(
+          contentType: mimeType,
+          upsert: true,
+        ),
+      );
+    } catch (error) {
+      debugPrint(
+        'CHAT IMAGE UPLOAD ERROR: bucket=chat_images conversationId=$conversationId '
+        'userId=$currentUserId hasSession=$hasSession path=$storagePath '
+        'fileName=${attachmentFile.name} mimeType=$mimeType bytes=${attachmentBytes.length} '
+        'errorType=${error.runtimeType} error=$error',
+      );
+      rethrow;
+    }
+
+    final String publicUrl = storage.getPublicUrl(storagePath);
+    debugPrint(
+      'CHAT IMAGE UPLOAD SUCCESS: bucket=chat_images conversationId=$conversationId '
+      'userId=$currentUserId path=$storagePath url=$publicUrl',
+    );
+    return publicUrl;
   }
 
   void _scrollToBottom() {
@@ -796,6 +951,8 @@ class _CoachChatPageState extends State<CoachChatPage> {
     final ColorScheme colors = theme.colorScheme;
     final TextTheme textTheme = theme.textTheme;
     final double bottomInset = MediaQuery.of(context).viewInsets.bottom;
+    final Uint8List? selectedAttachmentBytes = _selectedAttachmentBytes;
+    final String? selectedAttachmentName = _selectedAttachmentFile?.name;
 
     return AnimatedContainer(
       duration: const Duration(milliseconds: 150),
@@ -813,6 +970,59 @@ class _CoachChatPageState extends State<CoachChatPage> {
       ),
       child: Column(
         children: <Widget>[
+          if (selectedAttachmentBytes != null) ...<Widget>[
+            Container(
+              width: double.infinity,
+              margin: const EdgeInsets.only(bottom: 12),
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: theme.scaffoldBackgroundColor,
+                borderRadius: BorderRadius.circular(20),
+                border: Border.all(color: theme.dividerColor),
+              ),
+              child: Row(
+                children: <Widget>[
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(12),
+                    child: Image.memory(
+                      selectedAttachmentBytes,
+                      width: 72,
+                      height: 72,
+                      fit: BoxFit.cover,
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: <Widget>[
+                        Text(
+                          'Изображение готово к отправке',
+                          style: textTheme.bodyMedium?.copyWith(
+                            color: colors.onSurface,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        if (selectedAttachmentName != null && selectedAttachmentName.trim().isNotEmpty) ...<Widget>[
+                          const SizedBox(height: 4),
+                          Text(
+                            selectedAttachmentName.trim(),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: textTheme.bodySmall?.copyWith(color: colors.onSurfaceVariant),
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
+                  IconButton(
+                    onPressed: _isSendingMessage ? null : _removeSelectedAttachment,
+                    icon: const Icon(Icons.close_rounded),
+                  ),
+                ],
+              ),
+            ),
+          ],
           SingleChildScrollView(
             scrollDirection: Axis.horizontal,
             child: Row(
@@ -848,10 +1058,10 @@ class _CoachChatPageState extends State<CoachChatPage> {
                   shape: BoxShape.circle,
                 ),
                 child: IconButton(
-                  onPressed: _isSendingMessage ? null : _showAttachmentPlaceholder,
+                  onPressed: _isSendingMessage || _conversationId == null ? null : _showAttachmentPlaceholder,
                   icon: Icon(
-                    Icons.add_rounded,
-                    color: textTheme.bodyMedium?.color,
+                    selectedAttachmentBytes == null ? Icons.add_rounded : Icons.image_rounded,
+                    color: selectedAttachmentBytes == null ? textTheme.bodyMedium?.color : colors.primary,
                   ),
                 ),
               ),
@@ -898,7 +1108,11 @@ class _CoachChatPageState extends State<CoachChatPage> {
                   ],
                 ),
                 child: IconButton(
-                  onPressed: _isSendingMessage || _conversationId == null ? null : _sendMessage,
+                  onPressed: _isSendingMessage || _conversationId == null
+                      ? null
+                      : (_messageController.text.trim().isEmpty && selectedAttachmentBytes == null)
+                          ? null
+                          : _sendMessage,
                   icon: _isSendingMessage
                       ? SizedBox(
                           width: 16,
@@ -1162,6 +1376,13 @@ class _ChatMessageRecord {
   final String? imageUrl;
 
   factory _ChatMessageRecord.fromMap(Map<String, dynamic> row) {
+    final String normalizedContent = row['content']?.toString().trim().isNotEmpty == true
+        ? row['content'].toString().trim()
+        : row['text']?.toString().trim() ?? '';
+    final String? normalizedImageUrl = row['image_url']?.toString().trim().isNotEmpty == true
+        ? row['image_url'].toString().trim()
+        : null;
+
     return _ChatMessageRecord(
       id: row['id']?.toString() ?? '',
       conversationId: row['conversation_id']?.toString() ?? '',
@@ -1169,17 +1390,13 @@ class _ChatMessageRecord {
       receiverId: row['receiver_id']?.toString() ?? '',
       senderRole: row['sender_role']?.toString().trim().toLowerCase() ?? 'client',
       messageType: row['message_type']?.toString().trim().toLowerCase() ?? 'text',
-      content: row['content']?.toString().trim().isNotEmpty == true
-          ? row['content'].toString().trim()
-          : row['text']?.toString().trim() ?? '',
+      content: normalizedContent,
       metadata: row['metadata'] is Map ? Map<String, dynamic>.from(row['metadata'] as Map) : <String, dynamic>{},
       createdAt: DateTime.tryParse(row['created_at']?.toString() ?? '') ?? DateTime.now(),
       readAt: DateTime.tryParse(row['read_at']?.toString() ?? ''),
       editedAt: DateTime.tryParse(row['edited_at']?.toString() ?? ''),
       deletedAt: DateTime.tryParse(row['deleted_at']?.toString() ?? ''),
-      imageUrl: row['image_url']?.toString().trim().isNotEmpty == true
-          ? row['image_url'].toString().trim()
-          : null,
+      imageUrl: normalizedImageUrl,
     );
   }
 }
@@ -1294,6 +1511,8 @@ class _ChatMessageTile extends StatelessWidget {
     final ThemeData theme = Theme.of(context);
     final ColorScheme colors = theme.colorScheme;
     final TextTheme textTheme = theme.textTheme;
+    final bool hasImage = message.imageUrl != null && message.imageUrl!.trim().isNotEmpty;
+    final bool hasText = message.content.trim().isNotEmpty;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -1322,14 +1541,15 @@ class _ChatMessageTile extends StatelessWidget {
             textAlign: TextAlign.center,
           ),
         ] else ...<Widget>[
-          if (message.imageUrl != null) ...<Widget>[
+          if (hasImage) ...<Widget>[
             _buildImage(context),
-            const SizedBox(height: 8),
+            if (hasText) const SizedBox(height: 8),
           ],
-          Text(
-            message.content,
-            style: textTheme.bodyMedium?.copyWith(color: palette.foreground),
-          ),
+          if (hasText)
+            Text(
+              message.content,
+              style: textTheme.bodyMedium?.copyWith(color: palette.foreground),
+            ),
         ],
         const SizedBox(height: 8),
         Row(

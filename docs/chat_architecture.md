@@ -31,11 +31,14 @@ This is intentionally not a group-chat model.
 - `sender_role`
 - `message_type`
 - `content` / `text`
+- `image_url`
 - `metadata`
 - `read_at`
 
 The schema keeps `content` and `text` together for compatibility.
 The write path normalizes them so the message body is not ambiguous.
+Image attachments are MVP-only and currently limited to a single `image_url` per
+message row in `public.messages`.
 
 ## Current realtime architecture
 
@@ -90,6 +93,10 @@ Message metadata carries operational context such as:
 The workqueue and chat send paths both write messages through `send_chat_message(...)`.
 That keeps messaging behavior consistent whether it is initiated from the coach panel
 or from the chat screen itself.
+The current RPC contract supports text-only, image-only, and text-plus-image
+messages without changing the realtime reload flow.
+The composer uploads images first, then sends the committed `image_url` through the
+same RPC path; it still does not create optimistic local bubbles.
 
 ## Silence detection preparation
 
@@ -111,3 +118,10 @@ response windows without scraping the UI.
 
 Those are deliberate MVP choices, not missing pieces.
 
+## Manual smoke checklist
+
+- send a text-only message and confirm it appears after the normal reload path
+- send an image-only message and confirm the bubble shows the image without empty text
+- send a text-plus-image message and confirm both the image and caption render
+- reload or reopen the chat and confirm the previously sent image messages still render
+- open the chat as the receiving participant and confirm read state still updates normally
